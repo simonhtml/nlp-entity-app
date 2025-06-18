@@ -1,0 +1,5 @@
+streamlit
+google-cloud-language
+beautifulsoup4
+requests
+google_credentials.json

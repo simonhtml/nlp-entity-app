@@ -10,13 +10,11 @@ import colorsys
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
-# --- Rerun compatibility for all Streamlit versions
 try:
     rerun = st.rerun
 except AttributeError:
     rerun = st.experimental_rerun
 
-# ---- Password + Login Button, Wide Centre Column ----
 col1, col2, col3 = st.columns([1, 5, 1])
 if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
     with col2:
@@ -31,7 +29,6 @@ if "authenticated" not in st.session_state or not st.session_state["authenticate
                 st.error("Incorrect password.")
         st.stop()
 
-# ---- Rate Limiting ----
 LIMIT = 15
 if "request_count" not in st.session_state:
     st.session_state["request_count"] = 0
@@ -39,7 +36,6 @@ if st.session_state["request_count"] >= LIMIT:
     st.error("Rate limit exceeded. Please wait or reload the app later.")
     st.stop()
 
-# ---- Service Account ----
 CREDENTIALS_PATH = "google_credentials.json"
 if not os.path.exists(CREDENTIALS_PATH):
     creds = st.secrets["SEO_TEAM_461800"]
@@ -67,13 +63,6 @@ def hex_to_rgb(hex_colour):
 def rgb_to_hex(rgb_tuple):
     return "#{:02x}{:02x}{:02x}".format(*rgb_tuple)
 
-def adjust_lightness(hex_colour, amount=1.2):
-    r, g, b = hex_to_rgb(hex_colour)
-    h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
-    l = max(0, min(1, l * amount))
-    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
-    return rgb_to_hex((int(r2*255), int(g2*255), int(b2*255)))
-
 def adjust_darkness(hex_colour, amount=0.8):
     r, g, b = hex_to_rgb(hex_colour)
     h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
@@ -81,14 +70,26 @@ def adjust_darkness(hex_colour, amount=0.8):
     r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
     return rgb_to_hex((int(r2*255), int(g2*255), int(b2*255)))
 
-def make_progress_html(percent, colour):
-    light = adjust_lightness(colour, 1.7)
-    dark = adjust_darkness(colour, 0.7)
+def make_salience_pill(percent, colour):
+    bar_colour = adjust_darkness(colour, 0.75)
+    text_colour = "#222" if percent < 60 else "#fff"
     return f'''
-    <div style="background:{light};border-radius:7px;width:105px;height:18px;position:relative;overflow:hidden;">
-        <div style="background:{dark};width:{percent}%;height:100%;border-radius:7px 0 0 7px;"></div>
-        <span style="position:absolute;top:0;left:50%;transform:translateX(-50%,0);font-size:0.95em;color:#222;font-weight:600;line-height:18px;">{percent}%</span>
-    </div>'''
+    <div style="
+        display: inline-block;
+        min-width: 48px;
+        height: 22px;
+        border-radius: 15px;
+        background: {bar_colour};
+        line-height: 22px;
+        text-align: center;
+        font-size: 1em;
+        font-weight: 700;
+        color: {text_colour};
+        padding: 0 12px;
+        margin: 0 3px;">
+        {percent}%
+    </div>
+    '''
 
 def extract_visible_text(html_code):
     soup = BeautifulSoup(html_code, "html.parser")
@@ -126,6 +127,14 @@ def get_entities_and_category(text):
     except Exception:
         pass
     return entities, ([], None)
+
+def clean_entity_for_wiki(name):
+    name = re.sub(r'[\u2013\u2014]', '-', name)  # En dash etc
+    name = re.sub(r'[^\w\s\-]', '', name)       # Remove stray non-word
+    name = re.sub(r'\s+', ' ', name).strip()
+    name = name.title()  # Title-case for Wikipedia
+    name = name.replace(" ", "_")
+    return name
 
 def highlight_entities_in_content(text, entities):
     if not text:
@@ -234,35 +243,35 @@ if entities:
     rows = []
     for idx, row in df.iterrows():
         colour = ENTITY_TYPE_COLOURS.get(row["type"], "#eee")
-        relevance_bar = make_progress_html(row["relevance"], colour)
-        # Wiki logic (fast version, no API calls)
+        pill = make_salience_pill(row["relevance"], colour)
         wiki = row["wikipedia_url"]
         entity_name = row["name"]
+        wiki_html = ""
+        # Fix any weird char for Wiki URL
+        clean_wiki = clean_entity_for_wiki(entity_name)
+        title_for_display = clean_wiki.replace("_", " ")
         if wiki:
-            wiki_disp = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{entity_name}</a>'
+            wiki_html = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{title_for_display}</a>'
         else:
-            guessed_url = f"https://en.wikipedia.org/wiki/{entity_name.replace(' ', '_')}"
-            wiki_disp = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{entity_name}</a>'
+            guessed_url = f"https://en.wikipedia.org/wiki/{clean_wiki}"
+            wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{title_for_display}</a>'
         rows.append({
             "Entity": html.escape(entity_name),
-            "Type": row["type"],
-            "Relevance": relevance_bar,
-            "Wikipedia": wiki_disp
+            "Relevance": pill,
+            "Wikipedia": wiki_html
         })
 
-    # Only show top 20, expander for more
     TOP_N = 20
     shown = rows[:TOP_N]
     extra = rows[TOP_N:]
 
     def table_html(rows):
         return (
-            '<table style="width:100%; font-size:0.98em; border-collapse:collapse;">'
-            '<tr><th align="left">Entity</th><th align="left">Type</th><th align="left" style="width:115px;">Relevance</th><th align="left" style="width:320px;">Wikipedia</th></tr>' +
+            '<table style="width:100%; font-size:1em; border-collapse:collapse;">'
+            '<tr><th align="left">Entity</th><th align="left" style="width:90px;">Relevance</th><th align="left" style="width:340px;">Wikipedia</th></tr>' +
             "".join(
                 f'<tr>'
                 f'<td style="padding:3px 6px;">{r["Entity"]}</td>'
-                f'<td style="padding:3px 6px;">{r["Type"]}</td>'
                 f'<td style="padding:3px 6px;">{r["Relevance"]}</td>'
                 f'<td style="padding:3px 6px;">{r["Wikipedia"]}</td>'
                 f'</tr>'
@@ -277,19 +286,16 @@ if entities:
         with st.expander(f"Show {len(extra)} more entities"):
             st.markdown(table_html(extra), unsafe_allow_html=True)
 
-    # CSV download
     csv_buffer = StringIO()
     pd.DataFrame([
         {
             "Entity": r["Entity"],
-            "Type": r["Type"],
             "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"])
         }
         for r in rows
     ]).to_csv(csv_buffer, index=False)
     st.download_button("Download Entities as CSV", csv_buffer.getvalue(), file_name="entities.csv", mime="text/csv")
 
-    # --- Highlighted Content ---
     st.markdown("### Content with Entities Highlighted")
     styled_content = highlight_entities_in_content(content_text, entities)
     if styled_content.strip():

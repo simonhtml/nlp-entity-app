@@ -1,30 +1,28 @@
-import os
 import streamlit as st
+import requests
+import json
+import re
+import html
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
+
+# --- PULL SECRETS ---
+API_KEY = st.secrets.get("NLP_API_KEY")
+AUTH_PASSWORD = st.secrets.get("APP_PASSWORD")
+# Service account (for reference, not used here):
+# SERVICE_ACCOUNT = st.secrets.get("SEO_TEAM_461800")
 
 # --- PASSWORD PROTECTION ---
 if "authenticated" not in st.session_state:
     password = st.text_input("Password", type="password")
-    if password != "EngineRoom2024!":
+    if password != AUTH_PASSWORD:
         st.stop()
     else:
         st.session_state["authenticated"] = True
 
-# --- LOAD GOOGLE NLP CREDENTIALS FROM STREAMLIT SECRET ---
-if "SEO_TEAM_461800" in st.secrets:
-    with open("google_credentials.json", "w") as f:
-        f.write(str(st.secrets["SEO_TEAM_461800"]))
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_credentials.json"
-
-import requests
-from bs4 import BeautifulSoup
-from google.cloud import language_v1
-import json
-import re
-
-def extract_visible_text(html):
-    soup = BeautifulSoup(html, "html.parser")
+def extract_visible_text(html_code):
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html_code, "html.parser")
     for tag in soup(["script", "style", "head", "title", "meta", "[document]", "noscript"]):
         tag.decompose()
     for tag in soup.find_all(['nav', 'footer', 'aside']):
@@ -38,33 +36,54 @@ def extract_visible_text(html):
     else:
         return soup.get_text(separator=' ', strip=True)
 
-def get_entities(text):
-    client = language_v1.LanguageServiceClient()
-    document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
-    response = client.analyze_entities(document=document, encoding_type='UTF8')
-    entities = [{"name": e.name, "type": language_v1.Entity.Type(e.type_).name} for e in response.entities]
+def get_entities_via_api_key(text, api_key):
+    url = f"https://language.googleapis.com/v1/documents:analyzeEntities?key={api_key}"
+    payload = {
+        "document": {
+            "type": "PLAIN_TEXT",
+            "content": text
+        },
+        "encodingType": "UTF8"
+    }
+    r = requests.post(url, json=payload)
+    result = r.json()
+    if "error" in result:
+        raise RuntimeError(result["error"].get("message", "API Error"))
+    entities = []
+    for e in result.get("entities", []):
+        entities.append({
+            "name": e.get("name"),
+            "type": e.get("type"),
+            "salience": round(e.get("salience", 3), 3),
+            "wikipedia_url": e.get("metadata", {}).get("wikipedia_url", ""),
+            "mid": e.get("metadata", {}).get("mid", "")
+        })
     return entities
 
-def highlight_entities(text, entities):
-    # Unique, longer names first to avoid partial highlight overlap
-    entity_names = sorted({e["name"] for e in entities if e["name"].strip()}, key=len, reverse=True)
-    def replacer(match):
-        matched = match.group(0)
-        return f'<mark style="background: #ffe066; color: #303030; padding:0 2px; border-radius:4px;">{matched}</mark>'
-    for name in entity_names:
-        # Word boundary only if name is a word; this makes it robust for phrases too
-        if len(name) > 2:
-            text = re.sub(r'(?i)\b{}\b'.format(re.escape(name)), replacer, text)
+def highlight_entities_spacy_style(text, entities):
+    entity_list = sorted(
+        set((e["name"], e["type"], e["salience"]) for e in entities if e["name"].strip()),
+        key=lambda x: -len(x[0])
+    )
+    text = html.escape(text)
+    for name, etype, salience in entity_list:
+        opacity = min(0.45 + salience, 1.0)
+        badge = (
+            f'<span style="background:rgba(255, 235, 59, {opacity}); color:#222; border-radius:4px; '
+            f'padding:2px 6px 2px 4px; margin:1px; font-size:0.97em; font-family:monospace;" '
+            f'title="Salience: {salience}">{html.escape(name)}'
+            f' <span style="background:#fffbe7; color:#7b7800; border-radius:2px; font-size:0.73em; padding:0 5px 0 5px; margin-left:4px;">{etype}</span>'
+            f'</span>'
+        )
+        text = re.sub(r'(?i)(?<![>\w])' + re.escape(name) + r'(?!</span>)', badge, text)
     return text
 
 st.markdown("# SEO Entity Extraction Tool")
-st.markdown("Analyse visible page or text content and see entities highlighted in your actual content.")
+st.markdown("Analyse visible page or text content and see entities (with salience) highlighted in your content.")
 
 mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])
-input_val = None
-content_text = ""
 entities = []
-visible = ""
+content_text = ""
 
 if mode == "By URL":
     url = st.text_input("Enter URL to fetch:")
@@ -72,44 +91,45 @@ if mode == "By URL":
         with st.spinner("Fetching and analysing..."):
             try:
                 response = requests.get(url)
-                html = response.text
-                visible = extract_visible_text(html)
-                content_text = visible
-                entities = get_entities(visible)
+                html_code = response.text
+                content_text = extract_visible_text(html_code)
+                entities = get_entities_via_api_key(content_text, API_KEY)
             except Exception as e:
                 st.error(f"Error: {e}")
 
 elif mode == "Paste HTML":
-    html = st.text_area("Paste HTML here", height=150)
+    html_input = st.text_area("Paste HTML here", height=150)
     if st.button("Analyse"):
         with st.spinner("Analysing pasted HTML..."):
             try:
-                visible = extract_visible_text(html)
-                content_text = visible
-                entities = get_entities(visible)
+                content_text = extract_visible_text(html_input)
+                entities = get_entities_via_api_key(content_text, API_KEY)
             except Exception as e:
                 st.error(f"Error: {e}")
 
 else:
-    text = st.text_area("Paste plain text here", height=150)
+    text_input = st.text_area("Paste plain text here", height=150)
     if st.button("Analyse"):
         with st.spinner("Analysing pasted plain text..."):
             try:
-                content_text = text
-                entities = get_entities(text)
+                content_text = text_input
+                entities = get_entities_via_api_key(content_text, API_KEY)
             except Exception as e:
                 st.error(f"Error: {e}")
 
 if entities:
-    st.markdown("### Entities")
-    st.dataframe(entities, use_container_width=True)
-    st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
+    import pandas as pd
+    df = pd.DataFrame(entities)
+    df = df.sort_values("salience", ascending=False)
+    st.markdown("### Entities (sorted by importance to topic)")
+    st.dataframe(df, use_container_width=True)
+    st.download_button("Download Entities as JSON", df.to_json(orient="records", indent=2), file_name="entities.json")
     st.markdown("### Content with Entities Highlighted")
-    highlighted = highlight_entities(content_text, entities)
+    styled_content = highlight_entities_spacy_style(content_text, entities)
     st.markdown(
-        f'<div style="background: #faf9f6; padding:1em 1.2em; border-radius:6px; font-size: 1.1em;">{highlighted}</div>',
+        f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.85;">{styled_content}</div>',
         unsafe_allow_html=True,
     )
 
 st.markdown("---")
-st.caption("Entities are highlighted in yellow. This tool analyses only visible body content (not nav/footers/scripts). EngineRoom 2024.")
+st.caption("Entities are highlighted in yellow. Importance is measured by salience. Tool analyses only visible content. EngineRoom 2024.")

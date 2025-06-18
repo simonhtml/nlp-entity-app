@@ -3,17 +3,19 @@ import os
 import json
 import re
 import html
+import requests
+import pandas as pd
+from io import StringIO
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
-# --- rerun compatible with all Streamlit versions
 try:
     rerun = st.rerun
 except AttributeError:
     rerun = st.experimental_rerun
 
 # ---- Password + Login Button, Wide Centre Column ----
-col1, col2, col3 = st.columns([1, 5, 1])  # Wide centre
+col1, col2, col3 = st.columns([1, 5, 1])
 if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
     with col2:
         st.markdown("### Login")
@@ -28,14 +30,13 @@ if "authenticated" not in st.session_state or not st.session_state["authenticate
         st.stop()
 
 # ---- Rate Limiting ----
-LIMIT = 15  # Number of analyses per user session
+LIMIT = 15
 if "request_count" not in st.session_state:
     st.session_state["request_count"] = 0
 if st.session_state["request_count"] >= LIMIT:
     st.error("Rate limit exceeded. Please wait or reload the app later.")
     st.stop()
 
-# ---- Write service account JSON to file ----
 CREDENTIALS_PATH = "google_credentials.json"
 if not os.path.exists(CREDENTIALS_PATH):
     creds = st.secrets["SEO_TEAM_461800"]
@@ -47,25 +48,13 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
 
 from bs4 import BeautifulSoup
 from google.cloud import language_v1
-import pandas as pd
-from io import StringIO
 
 ENTITY_TYPE_COLOURS = {
-    "PERSON": "#b7e4c7",          # mint green
-    "LOCATION": "#ffe066",        # yellow
-    "ORGANIZATION": "#a5d8ff",    # sky blue
-    "EVENT": "#eebefa",           # purple
-    "WORK_OF_ART": "#ffd6a5",     # peach
-    "CONSUMER_GOOD": "#f4bfbf",   # pink
-    "OTHER": "#cfd8dc",           # grey-blue
-    "ADDRESS": "#b2f0e3",         # teal
-    "DATE": "#ffe6b3",            # pale orange
-    "NUMBER": "#dee2e6",          # light grey
-    "PRICE": "#ffe0e0",           # pale red
-    "PHONE_NUMBER": "#e0f7fa",    # pale cyan
-    "ORGANISATION": "#a5d8ff",    # fallback for UK/AU spelling
-    "CARDINAL": "#eeeec7",        # light cream
-    "ORDINAL": "#eeeec7"          # light cream
+    "PERSON": "#b7e4c7", "LOCATION": "#ffe066", "ORGANIZATION": "#a5d8ff",
+    "EVENT": "#eebefa", "WORK_OF_ART": "#ffd6a5", "CONSUMER_GOOD": "#f4bfbf",
+    "OTHER": "#cfd8dc", "ADDRESS": "#b2f0e3", "DATE": "#ffe6b3",
+    "NUMBER": "#dee2e6", "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa",
+    "ORGANISATION": "#a5d8ff", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
 }
 
 def extract_visible_text(html_code):
@@ -82,7 +71,6 @@ def extract_visible_text(html_code):
 
 def get_entities_and_category(text):
     client = language_v1.LanguageServiceClient()
-    # Entities
     doc = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
     entities_response = client.analyze_entities(document=doc, encoding_type='UTF8')
     entities = []
@@ -95,14 +83,13 @@ def get_entities_and_category(text):
             "wikipedia_url": str(e.metadata.get("wikipedia_url", "")),
             "mid": str(e.metadata.get("mid", "")),
         })
-    # Content Category (only works for >20 tokens, else returns empty list)
     try:
         category_resp = client.classify_text(document=doc)
         if category_resp.categories:
             top_cat = max(category_resp.categories, key=lambda c: c.confidence)
             category_breadcrumb = top_cat.name.split("/")
             confidence = round(top_cat.confidence * 100)
-            return entities, (category_breadcrumb[1:], confidence)  # drop leading empty element
+            return entities, (category_breadcrumb[1:], confidence)
     except Exception:
         pass
     return entities, ([], None)
@@ -134,10 +121,32 @@ def highlight_entities_in_content(text, entities):
         text = re.sub(r'(?<![>\w])' + re.escape(name) + r'(?!</span>)', badge, text, count=1)
     return text
 
+def fetch_wiki_title(wiki_url):
+    # Given a wiki url, get the title (or None if not found)
+    page = wiki_url.split("/wiki/")[-1]
+    r = requests.get("https://en.wikipedia.org/w/api.php", params={
+        "action": "query", "prop": "info", "inprop": "url", "format": "json", "titles": page
+    })
+    data = r.json()
+    pages = data.get("query", {}).get("pages", {})
+    for pageid, info in pages.items():
+        if int(pageid) < 0:
+            return None
+        return info.get("title")
+    return None
+
 # --- UI ---
 
 st.markdown("# SEO Entity Extraction Tool")
-st.markdown("Analyse visible content or text and see entities highlighted in your content with type badge and salience percent. Categories at top, full table, CSV download.")
+st.markdown(
+    """
+    This tool analyses the visible content of a page or pasted text and extracts Google's identified entities, sorted by their importance to your topic ("relevance" from Google salience).  
+    - Entities are shown with a progress bar for relevance and a Wikipedia link (if available).
+    - A green progress bar above shows the confidence Google has in the overall topic classification.
+    - "Google Wiki" means Google's Knowledge Graph mapped it directly.  
+    - "No Google Wiki, guessed Wiki" tries to match the entity's Wikipedia page (if found).
+    """
+)
 
 mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])
 entities = []
@@ -150,10 +159,7 @@ if mode == "By URL":
     if st.button("Analyse"):
         with st.spinner("Fetching and analysing..."):
             try:
-                import requests
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-                }
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
                 response = requests.get(url, headers=headers)
                 html_code = response.text
                 content_text = extract_visible_text(html_code)
@@ -184,7 +190,7 @@ else:
             except Exception as e:
                 st.error(f"Error: {e}")
 
-# --- CATEGORY ---
+# --- CATEGORY (with green progress bar) ---
 if category_path and category_conf is not None:
     st.markdown(f"#### From your description, Google attributes this category to this entity")
     st.markdown(
@@ -204,58 +210,73 @@ if category_path and category_conf is not None:
 if entities:
     df = pd.DataFrame(entities)
     df = df.sort_values("salience", ascending=False)
+    df = df.reset_index(drop=True)
 
     def make_progress_html(percent, colour):
         return f'''
-        <div style="background:#f0f0f0;border-radius:4px;width:100%;height:18px;position:relative;">
-            <div style="background:{colour};width:{percent}%;height:100%;border-radius:4px;"></div>
-            <span style="position:absolute;top:0;left:50%;transform:translateX(-50%);font-size:0.85em;color:#222;">{percent}%</span>
+        <div style="background:#f0f0f0;border-radius:3px;width:95px;height:10px;position:relative;">
+            <div style="background:{colour};width:{percent}%;height:100%;border-radius:3px;"></div>
+            <span style="position:absolute;top:-2px;left:50%;transform:translateX(-50%);font-size:0.75em;color:#222;">{percent}%</span>
         </div>'''
 
     rows = []
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         colour = ENTITY_TYPE_COLOURS.get(row["type"], "#eee")
         relevance_bar = make_progress_html(row["relevance"], colour)
+        # Wiki logic
         wiki = row["wikipedia_url"]
-        fallback_url = f"https://en.wikipedia.org/wiki/{row['name'].replace(' ', '_')}"
-        if not wiki:
-            wiki = fallback_url
-            wiki_note = " (guessed)"
+        entity_name = row["name"]
+        if wiki:
+            title = fetch_wiki_title(wiki) or entity_name
+            wiki_disp = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{title}</a>'
         else:
-            wiki_note = ""
-        wiki_link = f'<a href="{wiki}" target="_blank" rel="noopener">{wiki_note or "Wiki"}</a>'
+            guessed_url = f"https://en.wikipedia.org/wiki/{entity_name.replace(' ', '_')}"
+            guessed_title = fetch_wiki_title(guessed_url)
+            if guessed_title:
+                wiki_disp = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{guessed_title}</a>'
+            else:
+                wiki_disp = "No Google Wiki, no valid guessed Wiki"
         rows.append({
-            "Entity": html.escape(row["name"]),
+            "Entity": html.escape(entity_name),
             "Type": row["type"],
             "Relevance": relevance_bar,
-            "Wikipedia": wiki_link
+            "Wikipedia": wiki_disp
         })
 
-    # Custom table with progress bars and links
-    st.markdown("### Entities (sorted by importance to topic)")
-    st.markdown(
-        '<table style="width:100%;">'
-        '<tr><th align="left">Entity</th><th align="left">Type</th><th align="left">Relevance</th><th align="left">Wikipedia</th></tr>' +
-        "".join(
-            f'<tr>'
-            f'<td>{r["Entity"]}</td>'
-            f'<td>{r["Type"]}</td>'
-            f'<td style="min-width:180px;">{r["Relevance"]}</td>'
-            f'<td>{r["Wikipedia"]}</td>'
-            f'</tr>'
-            for r in rows
-        ) +
-        '</table>',
-        unsafe_allow_html=True
-    )
+    # Only show top 20, expander for more
+    TOP_N = 20
+    shown = rows[:TOP_N]
+    extra = rows[TOP_N:]
 
-    # CSV download (using fallback for wiki)
+    def table_html(rows):
+        return (
+            '<table style="width:100%; font-size:0.98em; border-collapse:collapse;">'
+            '<tr><th align="left">Entity</th><th align="left">Type</th><th align="left" style="width:110px;">Relevance</th><th align="left" style="width:290px;">Wikipedia</th></tr>' +
+            "".join(
+                f'<tr>'
+                f'<td style="padding:3px 6px;">{r["Entity"]}</td>'
+                f'<td style="padding:3px 6px;">{r["Type"]}</td>'
+                f'<td style="padding:3px 6px;">{r["Relevance"]}</td>'
+                f'<td style="padding:3px 6px;">{r["Wikipedia"]}</td>'
+                f'</tr>'
+                for r in rows
+            ) +
+            '</table>'
+        )
+
+    st.markdown("### Entities (sorted by importance to topic)")
+    st.markdown(table_html(shown), unsafe_allow_html=True)
+    if extra:
+        with st.expander(f"Show {len(extra)} more entities"):
+            st.markdown(table_html(extra), unsafe_allow_html=True)
+
+    # CSV download
     csv_buffer = StringIO()
     pd.DataFrame([
         {
             "Entity": r["Entity"],
             "Type": r["Type"],
-            "Wikipedia": r["Wikipedia"]
+            "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"])
         }
         for r in rows
     ]).to_csv(csv_buffer, index=False)
@@ -273,4 +294,4 @@ if entities:
         st.info("No content to highlight or no entities found.")
 
 st.markdown("---")
-st.caption("Entities are highlighted with badges by type. Relevance = Google salience as percent. Topic category is shown above. Rate limited to 15 analyses per session. EngineRoom 2024.")
+st.caption("Entities are highlighted with badges by type. Relevance = Google salience as percent. Topic category is shown above. Rate limited to 15 analyses per session. Simon 2025.")

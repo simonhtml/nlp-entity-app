@@ -11,10 +11,10 @@ if "authenticated" not in st.session_state or not st.session_state["authenticate
     password = st.text_input("Password", type="password")
     if password == st.secrets["app_password"]:
         st.session_state["authenticated"] = True
-        st.success("Authenticated! Please reload the page.")
-        st.stop()
+        st.stop()  # End here; next run the user will be authenticated
     else:
         st.stop()
+
 
 
 # --- Service Account Setup ---

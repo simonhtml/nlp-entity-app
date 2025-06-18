@@ -6,14 +6,21 @@ import html
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
-# ---- Password protection ----
+# ---- Password + Login Button, Centred Column ----
+col1, col2, col3 = st.columns([2, 3, 8])
 if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
-    password = st.text_input("Password", type="password")
-    if password == st.secrets["app_password"]:
-        st.session_state["authenticated"] = True
+    with col2:
+        st.markdown("### Login")
+        pw = st.text_input("Password", type="password", key="pw_input")
+        login = st.button("Login")
+        if login:
+            if pw == st.secrets["app_password"]:
+                st.session_state["authenticated"] = True
+                st.experimental_rerun()
+            else:
+                st.error("Incorrect password.")
         st.stop()
-    else:
-        st.stop()
+
 
 # ---- Write service account JSON to file ----
 CREDENTIALS_PATH = "google_credentials.json"

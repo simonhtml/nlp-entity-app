@@ -1,5 +1,5 @@
 import streamlit as st
-import requests
+import os
 import json
 import re
 import html
@@ -7,10 +7,8 @@ import html
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
 # --- PULL SECRETS ---
-API_KEY = st.secrets.get("NLP_API_KEY")
 AUTH_PASSWORD = st.secrets.get("APP_PASSWORD")
-# Service account (for reference, not used here):
-# SERVICE_ACCOUNT = st.secrets.get("SEO_TEAM_461800")
+SERVICE_ACCOUNT = st.secrets.get("SEO_TEAM_461800")
 
 # --- PASSWORD PROTECTION ---
 if "authenticated" not in st.session_state:
@@ -20,8 +18,17 @@ if "authenticated" not in st.session_state:
     else:
         st.session_state["authenticated"] = True
 
+# --- Write service account secret to file for the NLP client ---
+CREDENTIALS_PATH = "google_credentials.json"
+if not os.path.exists(CREDENTIALS_PATH):
+    with open(CREDENTIALS_PATH, "w") as f:
+        f.write(SERVICE_ACCOUNT)
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
+
+from bs4 import BeautifulSoup
+from google.cloud import language_v1
+
 def extract_visible_text(html_code):
-    from bs4 import BeautifulSoup
     soup = BeautifulSoup(html_code, "html.parser")
     for tag in soup(["script", "style", "head", "title", "meta", "[document]", "noscript"]):
         tag.decompose()
@@ -36,27 +43,18 @@ def extract_visible_text(html_code):
     else:
         return soup.get_text(separator=' ', strip=True)
 
-def get_entities_via_api_key(text, api_key):
-    url = f"https://language.googleapis.com/v1/documents:analyzeEntities?key={api_key}"
-    payload = {
-        "document": {
-            "type": "PLAIN_TEXT",
-            "content": text
-        },
-        "encodingType": "UTF8"
-    }
-    r = requests.post(url, json=payload)
-    result = r.json()
-    if "error" in result:
-        raise RuntimeError(result["error"].get("message", "API Error"))
+def get_entities_with_salience(text):
+    client = language_v1.LanguageServiceClient()
+    document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
+    response = client.analyze_entities(document=document, encoding_type='UTF8')
     entities = []
-    for e in result.get("entities", []):
+    for e in response.entities:
         entities.append({
-            "name": e.get("name"),
-            "type": e.get("type"),
-            "salience": round(e.get("salience", 3), 3),
-            "wikipedia_url": e.get("metadata", {}).get("wikipedia_url", ""),
-            "mid": e.get("metadata", {}).get("mid", "")
+            "name": e.name,
+            "type": language_v1.Entity.Type(e.type_).name,
+            "salience": round(e.salience, 3),
+            "wikipedia_url": e.metadata.get("wikipedia_url", ""),
+            "mid": e.metadata.get("mid", "")
         })
     return entities
 
@@ -90,10 +88,11 @@ if mode == "By URL":
     if st.button("Analyse"):
         with st.spinner("Fetching and analysing..."):
             try:
+                import requests
                 response = requests.get(url)
                 html_code = response.text
                 content_text = extract_visible_text(html_code)
-                entities = get_entities_via_api_key(content_text, API_KEY)
+                entities = get_entities_with_salience(content_text)
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -103,7 +102,7 @@ elif mode == "Paste HTML":
         with st.spinner("Analysing pasted HTML..."):
             try:
                 content_text = extract_visible_text(html_input)
-                entities = get_entities_via_api_key(content_text, API_KEY)
+                entities = get_entities_with_salience(content_text)
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -113,7 +112,7 @@ else:
         with st.spinner("Analysing pasted plain text..."):
             try:
                 content_text = text_input
-                entities = get_entities_via_api_key(content_text, API_KEY)
+                entities = get_entities_with_salience(content_text)
             except Exception as e:
                 st.error(f"Error: {e}")
 

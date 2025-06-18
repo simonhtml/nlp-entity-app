@@ -27,6 +27,14 @@ if "authenticated" not in st.session_state or not st.session_state["authenticate
                 st.error("Incorrect password.")
         st.stop()
 
+# ---- Rate Limiting ----
+LIMIT = 15  # Number of analyses per user session
+if "request_count" not in st.session_state:
+    st.session_state["request_count"] = 0
+if st.session_state["request_count"] >= LIMIT:
+    st.error("Rate limit exceeded. Please wait or reload the app later.")
+    st.stop()
+
 # ---- Write service account JSON to file ----
 CREDENTIALS_PATH = "google_credentials.json"
 if not os.path.exists(CREDENTIALS_PATH):
@@ -39,8 +47,9 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
 
 from bs4 import BeautifulSoup
 from google.cloud import language_v1
+import pandas as pd
+from io import StringIO
 
-# Pastel colour palette per entity type (Google NLP types)
 ENTITY_TYPE_COLOURS = {
     "PERSON": "#b7e4c7",          # mint green
     "LOCATION": "#ffe066",        # yellow
@@ -101,17 +110,14 @@ def get_entities_and_category(text):
 def highlight_entities_in_content(text, entities):
     if not text:
         return ""
-    # Build map of entity -> (type, relevance)
     ent_map = {}
     for ent in entities:
         ent_map[ent["name"]] = {
             "type": ent["type"],
             "relevance": ent["relevance"]
         }
-    # Sort by length descending for longest match first (avoid partial overlaps)
     entity_list = sorted(ent_map.items(), key=lambda x: -len(x[0]))
     text = html.escape(text)
-    # Insert highlight spans for each entity
     for name, info in entity_list:
         if not name.strip():
             continue
@@ -125,7 +131,6 @@ def highlight_entities_in_content(text, entities):
             f'<span style="background:#222;color:#fff;border-radius:2px;font-size:0.75em;padding:1px 7px;margin-left:7px;margin-right:1px;">{label}</span>'
             f'</span>'
         )
-        # Only highlight the first occurrence for each entity
         text = re.sub(r'(?<![>\w])' + re.escape(name) + r'(?!</span>)', badge, text, count=1)
     return text
 
@@ -146,10 +151,14 @@ if mode == "By URL":
         with st.spinner("Fetching and analysing..."):
             try:
                 import requests
-                response = requests.get(url)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+                }
+                response = requests.get(url, headers=headers)
                 html_code = response.text
                 content_text = extract_visible_text(html_code)
                 entities, (category_path, category_conf) = get_entities_and_category(content_text)
+                st.session_state["request_count"] += 1
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -160,6 +169,7 @@ elif mode == "Paste HTML":
             try:
                 content_text = extract_visible_text(html_input)
                 entities, (category_path, category_conf) = get_entities_and_category(content_text)
+                st.session_state["request_count"] += 1
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -170,27 +180,87 @@ else:
             try:
                 content_text = text_input
                 entities, (category_path, category_conf) = get_entities_and_category(content_text)
+                st.session_state["request_count"] += 1
             except Exception as e:
                 st.error(f"Error: {e}")
 
 # --- CATEGORY ---
-if category_path:
-    cat_str = " › ".join(category_path)
+if category_path and category_conf is not None:
     st.markdown(f"#### From your description, Google attributes this category to this entity")
-    st.markdown(f'<span style="color:#567;">{" › ".join(category_path)}</span> <span style="color:#aaa;font-size:0.9em;">({category_conf}% confidence)</span>', unsafe_allow_html=True)
+    st.markdown(
+        f'''
+        <div style="display:flex;align-items:center;">
+            <span style="color:#567;font-size:1.08em;">{' › '.join(category_path)}</span>
+            <div style="background:#e3fbe3; border-radius:6px; margin-left:20px; height:20px; width:150px; display:inline-block; overflow:hidden;">
+                <div style="background:#38b000; width:{category_conf}%; height:100%;"></div>
+            </div>
+            <span style="color:#38b000; margin-left:10px;">{category_conf}%</span>
+        </div>
+        ''',
+        unsafe_allow_html=True
+    )
 
 # --- ENTITIES TABLE & DOWNLOAD ---
 if entities:
-    import pandas as pd
     df = pd.DataFrame(entities)
     df = df.sort_values("salience", ascending=False)
+
+    def make_progress_html(percent, colour):
+        return f'''
+        <div style="background:#f0f0f0;border-radius:4px;width:100%;height:18px;position:relative;">
+            <div style="background:{colour};width:{percent}%;height:100%;border-radius:4px;"></div>
+            <span style="position:absolute;top:0;left:50%;transform:translateX(-50%);font-size:0.85em;color:#222;">{percent}%</span>
+        </div>'''
+
+    rows = []
+    for _, row in df.iterrows():
+        colour = ENTITY_TYPE_COLOURS.get(row["type"], "#eee")
+        relevance_bar = make_progress_html(row["relevance"], colour)
+        wiki = row["wikipedia_url"]
+        fallback_url = f"https://en.wikipedia.org/wiki/{row['name'].replace(' ', '_')}"
+        if not wiki:
+            wiki = fallback_url
+            wiki_note = " (guessed)"
+        else:
+            wiki_note = ""
+        wiki_link = f'<a href="{wiki}" target="_blank" rel="noopener">{wiki_note or "Wiki"}</a>'
+        rows.append({
+            "Entity": html.escape(row["name"]),
+            "Type": row["type"],
+            "Relevance": relevance_bar,
+            "Wikipedia": wiki_link
+        })
+
+    # Custom table with progress bars and links
     st.markdown("### Entities (sorted by importance to topic)")
-    st.dataframe(df[["name", "type", "relevance", "wikipedia_url"]].rename(columns={"name":"Entity", "type":"Type", "relevance":"Relevance (%)", "wikipedia_url":"Wikipedia URL"}), use_container_width=True)
-    # --- Robust CSV Download ---
-    from io import StringIO
+    st.markdown(
+        '<table style="width:100%;">'
+        '<tr><th align="left">Entity</th><th align="left">Type</th><th align="left">Relevance</th><th align="left">Wikipedia</th></tr>' +
+        "".join(
+            f'<tr>'
+            f'<td>{r["Entity"]}</td>'
+            f'<td>{r["Type"]}</td>'
+            f'<td style="min-width:180px;">{r["Relevance"]}</td>'
+            f'<td>{r["Wikipedia"]}</td>'
+            f'</tr>'
+            for r in rows
+        ) +
+        '</table>',
+        unsafe_allow_html=True
+    )
+
+    # CSV download (using fallback for wiki)
     csv_buffer = StringIO()
-    df[["name", "type", "relevance", "wikipedia_url"]].to_csv(csv_buffer, index=False)
+    pd.DataFrame([
+        {
+            "Entity": r["Entity"],
+            "Type": r["Type"],
+            "Wikipedia": r["Wikipedia"]
+        }
+        for r in rows
+    ]).to_csv(csv_buffer, index=False)
     st.download_button("Download Entities as CSV", csv_buffer.getvalue(), file_name="entities.csv", mime="text/csv")
+
     # --- Highlighted Content ---
     st.markdown("### Content with Entities Highlighted")
     styled_content = highlight_entities_in_content(content_text, entities)
@@ -203,4 +273,4 @@ if entities:
         st.info("No content to highlight or no entities found.")
 
 st.markdown("---")
-st.caption("Entities are highlighted with badges by type. Relevance = Google salience as percent. Topic category is shown above. EngineRoom 2024.")
+st.caption("Entities are highlighted with badges by type. Relevance = Google salience as percent. Topic category is shown above. Rate limited to 15 analyses per session. EngineRoom 2024.")

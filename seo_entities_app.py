@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 
-st.set_page_config(page_title="SEO Entity Tool", layout="wide")  # MUST be first Streamlit command
+st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
 # --- PASSWORD PROTECTION ---
 if "authenticated" not in st.session_state:
@@ -21,6 +21,7 @@ import requests
 from bs4 import BeautifulSoup
 from google.cloud import language_v1
 import json
+import re
 
 def extract_visible_text(html):
     soup = BeautifulSoup(html, "html.parser")
@@ -44,52 +45,71 @@ def get_entities(text):
     entities = [{"name": e.name, "type": language_v1.Entity.Type(e.type_).name} for e in response.entities]
     return entities
 
-st.title("SEO Entity Extraction Tool (URL or Paste Mode)")
+def highlight_entities(text, entities):
+    # Unique, longer names first to avoid partial highlight overlap
+    entity_names = sorted({e["name"] for e in entities if e["name"].strip()}, key=len, reverse=True)
+    def replacer(match):
+        matched = match.group(0)
+        return f'<mark style="background: #ffe066; color: #303030; padding:0 2px; border-radius:4px;">{matched}</mark>'
+    for name in entity_names:
+        # Word boundary only if name is a word; this makes it robust for phrases too
+        if len(name) > 2:
+            text = re.sub(r'(?i)\b{}\b'.format(re.escape(name)), replacer, text)
+    return text
+
+st.markdown("# SEO Entity Extraction Tool")
+st.markdown("Analyse visible page or text content and see entities highlighted in your actual content.")
 
 mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])
+input_val = None
+content_text = ""
+entities = []
+visible = ""
 
 if mode == "By URL":
     url = st.text_input("Enter URL to fetch:")
-    if st.button("Analyse URL"):
+    if st.button("Analyse"):
         with st.spinner("Fetching and analysing..."):
             try:
                 response = requests.get(url)
                 html = response.text
                 visible = extract_visible_text(html)
+                content_text = visible
                 entities = get_entities(visible)
-                st.success("Entities extracted from page body content.")
-                st.write(entities)
-                st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
-                with st.expander("Show extracted visible text"):
-                    st.text_area("Visible text", visible, height=200)
             except Exception as e:
                 st.error(f"Error: {e}")
 
 elif mode == "Paste HTML":
-    html = st.text_area("Paste HTML here")
-    if st.button("Analyse HTML"):
+    html = st.text_area("Paste HTML here", height=150)
+    if st.button("Analyse"):
         with st.spinner("Analysing pasted HTML..."):
             try:
                 visible = extract_visible_text(html)
+                content_text = visible
                 entities = get_entities(visible)
-                st.success("Entities extracted from pasted HTML body content.")
-                st.write(entities)
-                st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
-                with st.expander("Show extracted visible text"):
-                    st.text_area("Visible text", visible, height=200)
             except Exception as e:
                 st.error(f"Error: {e}")
 
 else:
-    text = st.text_area("Paste plain text here")
-    if st.button("Analyse Text"):
+    text = st.text_area("Paste plain text here", height=150)
+    if st.button("Analyse"):
         with st.spinner("Analysing pasted plain text..."):
             try:
+                content_text = text
                 entities = get_entities(text)
-                st.success("Entities extracted from pasted plain text.")
-                st.write(entities)
-                st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
-                with st.expander("Show input text"):
-                    st.text_area("Input text", text, height=200)
             except Exception as e:
                 st.error(f"Error: {e}")
+
+if entities:
+    st.markdown("### Entities")
+    st.dataframe(entities, use_container_width=True)
+    st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
+    st.markdown("### Content with Entities Highlighted")
+    highlighted = highlight_entities(content_text, entities)
+    st.markdown(
+        f'<div style="background: #faf9f6; padding:1em 1.2em; border-radius:6px; font-size: 1.1em;">{highlighted}</div>',
+        unsafe_allow_html=True,
+    )
+
+st.markdown("---")
+st.caption("Entities are highlighted in yellow. This tool analyses only visible body content (not nav/footers/scripts). EngineRoom 2024.")

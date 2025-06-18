@@ -48,48 +48,27 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
 from bs4 import BeautifulSoup
 from google.cloud import language_v1
 
+# Clean and distinct entity type set
 ENTITY_TYPE_COLOURS = {
-    "PERSON": "#b7e4c7", "LOCATION": "#ffe066", "ORGANIZATION": "#a5d8ff",
-    "EVENT": "#eebefa", "WORK_OF_ART": "#ffd6a5", "CONSUMER_GOOD": "#f4bfbf",
-    "OTHER": "#cfd8dc", "ADDRESS": "#b2f0e3", "DATE": "#ffe6b3",
-    "NUMBER": "#dee2e6", "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa",
-    "ORGANISATION": "#a5d8ff", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
+    "PERSON": "#51cf66", "LOCATION": "#ffe066", "ORGANIZATION": "#339af0", "ORG": "#339af0",
+    "EVENT": "#eebefa", "WORK_OF_ART": "#ffd6a5", "CONSUMER_GOOD": "#f4bfbf", "PRODUCT": "#f4bfbf",
+    "OTHER": "#adb5bd", "ADDRESS": "#b2f0e3", "DATE": "#ffe6b3", "NUMBER": "#dee2e6",
+    "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
 }
 
-def hex_to_rgb(hex_colour):
+def adjust_colour(hex_colour, light=True):
+    # darken or lighten hex colour (simple, works for UI)
     hex_colour = hex_colour.lstrip("#")
-    return tuple(int(hex_colour[i:i+2], 16) for i in (0, 2, 4))
-
-def rgb_to_hex(rgb_tuple):
-    return "#{:02x}{:02x}{:02x}".format(*rgb_tuple)
-
-def adjust_darkness(hex_colour, amount=0.8):
-    r, g, b = hex_to_rgb(hex_colour)
-    h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
-    l = max(0, min(1, l * amount))
-    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
-    return rgb_to_hex((int(r2*255), int(g2*255), int(b2*255)))
-
-def make_salience_pill(percent, colour):
-    bar_colour = adjust_darkness(colour, 0.75)
-    text_colour = "#222" if percent < 60 else "#fff"
-    return f'''
-    <div style="
-        display: inline-block;
-        min-width: 48px;
-        height: 22px;
-        border-radius: 15px;
-        background: {bar_colour};
-        line-height: 22px;
-        text-align: center;
-        font-size: 1em;
-        font-weight: 700;
-        color: {text_colour};
-        padding: 0 12px;
-        margin: 0 3px;">
-        {percent}%
-    </div>
-    '''
+    r, g, b = [int(hex_colour[i:i+2], 16) for i in (0, 2, 4)]
+    if light:
+        r = int((255 - r) * 0.7 + r)
+        g = int((255 - g) * 0.7 + g)
+        b = int((255 - b) * 0.7 + b)
+    else:
+        r = int(r * 0.85)
+        g = int(g * 0.85)
+        b = int(b * 0.85)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 def extract_visible_text(html_code):
     soup = BeautifulSoup(html_code, "html.parser")
@@ -107,16 +86,30 @@ def get_entities_and_category(text):
     client = language_v1.LanguageServiceClient()
     doc = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
     entities_response = client.analyze_entities(document=doc, encoding_type='UTF8')
-    entities = []
+    # Deduplicate: keep best (highest salience) per cleaned entity
+    entity_map = {}
     for e in entities_response.entities:
-        entities.append({
-            "name": e.name,
-            "type": language_v1.Entity.Type(e.type_).name,
-            "salience": float(round(e.salience, 3)),
-            "relevance": int(round(e.salience * 100)),
-            "wikipedia_url": str(e.metadata.get("wikipedia_url", "")),
-            "mid": str(e.metadata.get("mid", "")),
-        })
+        # Clean up entity name: ASCII, strip/control, titlecase
+        name = re.sub(r"[^\w\s\-]", "", e.name).strip()
+        name = re.sub(r"\s+", " ", name)
+        name = name.title()
+        if not name:
+            continue
+        if name not in entity_map or e.salience > entity_map[name]["salience"]:
+            # Clean type (use ORG for ORGANIZATION, and always upper)
+            etype = language_v1.Entity.Type(e.type_).name
+            if etype == "ORGANIZATION":
+                etype = "ORG"
+            entity_map[name] = {
+                "name": name,
+                "type": etype,
+                "salience": float(round(e.salience, 3)),
+                "relevance": int(round(e.salience * 100)),
+                "wikipedia_url": str(e.metadata.get("wikipedia_url", "")),
+                "mid": str(e.metadata.get("mid", "")),
+            }
+    entities = list(entity_map.values())
+    # Category
     try:
         category_resp = client.classify_text(document=doc)
         if category_resp.categories:
@@ -129,41 +122,50 @@ def get_entities_and_category(text):
     return entities, ([], None)
 
 def clean_entity_for_wiki(name):
-    name = re.sub(r'[\u2013\u2014]', '-', name)  # En dash etc
-    name = re.sub(r'[^\w\s\-]', '', name)       # Remove stray non-word
+    name = name.replace("’", "'")
+    name = re.sub(r'[\u2013\u2014]', '-', name)  # en/em dash
+    name = re.sub(r'[^\w\s\-]', '', name)  # Remove stray non-word
     name = re.sub(r'\s+', ' ', name).strip()
-    name = name.title()  # Title-case for Wikipedia
-    name = name.replace(" ", "_")
-    return name
+    name = name.title()
+    return name.replace(" ", "_")
+
+def make_progress_bar(percent, colour):
+    # Full width cell, light background fill, dark progress bar, bold percent text centered
+    light = adjust_colour(colour, light=True)
+    dark = adjust_colour(colour, light=False)
+    return f"""
+    <div style="width:100%;max-width:120px;background:{light};height:26px;border-radius:16px;position:relative;overflow:hidden;">
+      <div style="background:{dark};width:{percent}%;height:100%;border-radius:16px;transition:width 0.2s;"></div>
+      <span style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;text-shadow:0 1px 4px #0003;">{percent}%</span>
+    </div>
+    """
 
 def highlight_entities_in_content(text, entities):
     if not text:
         return ""
-    ent_map = {}
-    for ent in entities:
-        ent_map[ent["name"]] = {
-            "type": ent["type"],
-            "relevance": ent["relevance"]
-        }
-    entity_list = sorted(ent_map.items(), key=lambda x: -len(x[0]))
-    text = html.escape(text)
-    for name, info in entity_list:
-        if not name.strip():
-            continue
-        colour = ENTITY_TYPE_COLOURS.get(info["type"], "#e0e0e0")
-        label = info["type"]
-        sal = info["relevance"]
-        badge = (
-            f'<span style="background:{colour};color:#222;border-radius:4px;padding:2px 4px 2px 4px;margin:1px 1px 1px 0;'
-            f'font-size:1em;display:inline-block;white-space:nowrap;" title="{label} | Relevance: {sal}%">'
-            f'{html.escape(name)}'
-            f'<span style="background:#222;color:#fff;border-radius:2px;font-size:0.75em;padding:1px 7px;margin-left:7px;margin-right:1px;">{label}</span>'
+    # Order by length, longest first (avoid substring clashing)
+    sorted_ents = sorted(entities, key=lambda e: -len(e["name"]))
+    # Build regex map for all entities
+    def highlight(match):
+        word = match.group(0)
+        ent = next((e for e in sorted_ents if e["name"].lower() == word.lower()), None)
+        if not ent:
+            return word
+        colour = ENTITY_TYPE_COLOURS.get(ent["type"], "#adb5bd")
+        dark = adjust_colour(colour, light=False)
+        # Slim, inline, rounded
+        return (
+            f'<span style="background:{colour};color:#222;padding:1px 6px 1px 6px;border-radius:5px;'
+            f'display:inline-block;margin:1px 2px 1px 0;line-height:1.8;font-size:1em;vertical-align:middle;" '
+            f'title="{ent["type"]} | Relevance: {ent["relevance"]}%">'
+            f'{html.escape(word)}'
+            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.72em;padding:1px 5px 1px 5px;margin-left:4px;">{ent["type"]}</span>'
             f'</span>'
         )
-        text = re.sub(r'(?<![>\w])' + re.escape(name) + r'(?!</span>)', badge, text, count=1)
-    return text
-
-# --- UI ---
+    # Regex: match any entity word boundary (word not inside other word)
+    entity_names = [re.escape(e["name"]) for e in sorted_ents]
+    pattern = r'\b(' + "|".join(entity_names) + r')\b'
+    return re.sub(pattern, highlight, text, flags=re.IGNORECASE)
 
 st.markdown("# SEO Entity Extraction Tool")
 st.markdown(
@@ -234,7 +236,6 @@ if category_path and category_conf is not None:
         unsafe_allow_html=True
     )
 
-# --- ENTITIES TABLE & DOWNLOAD ---
 if entities:
     df = pd.DataFrame(entities)
     df = df.sort_values("salience", ascending=False)
@@ -242,22 +243,22 @@ if entities:
 
     rows = []
     for idx, row in df.iterrows():
-        colour = ENTITY_TYPE_COLOURS.get(row["type"], "#eee")
-        pill = make_salience_pill(row["relevance"], colour)
+        colour = ENTITY_TYPE_COLOURS.get(row["type"], "#adb5bd")
+        bar = make_progress_bar(row["relevance"], colour)
         wiki = row["wikipedia_url"]
         entity_name = row["name"]
         wiki_html = ""
-        # Fix any weird char for Wiki URL
         clean_wiki = clean_entity_for_wiki(entity_name)
-        title_for_display = clean_wiki.replace("_", " ")
+        display_title = clean_wiki.replace("_", " ")
         if wiki:
-            wiki_html = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{title_for_display}</a>'
+            wiki_html = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{display_title}</a>'
         else:
             guessed_url = f"https://en.wikipedia.org/wiki/{clean_wiki}"
-            wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{title_for_display}</a>'
+            wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{display_title}</a>'
         rows.append({
             "Entity": html.escape(entity_name),
-            "Relevance": pill,
+            "Type": row["type"],
+            "Relevance": bar,
             "Wikipedia": wiki_html
         })
 
@@ -268,12 +269,16 @@ if entities:
     def table_html(rows):
         return (
             '<table style="width:100%; font-size:1em; border-collapse:collapse;">'
-            '<tr><th align="left">Entity</th><th align="left" style="width:90px;">Relevance</th><th align="left" style="width:340px;">Wikipedia</th></tr>' +
+            '<tr><th align="left" style="width:190px;">Entity</th>'
+            '<th align="left" style="width:60px;">Type</th>'
+            '<th align="left" style="width:150px;">Relevance</th>'
+            '<th align="left" style="width:320px;">Wikipedia</th></tr>' +
             "".join(
                 f'<tr>'
-                f'<td style="padding:3px 6px;">{r["Entity"]}</td>'
-                f'<td style="padding:3px 6px;">{r["Relevance"]}</td>'
-                f'<td style="padding:3px 6px;">{r["Wikipedia"]}</td>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Entity"]}</td>'
+                f'<td style="padding:3px 6px;vertical-align:middle;">{r["Type"]}</td>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Relevance"]}</td>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Wikipedia"]}</td>'
                 f'</tr>'
                 for r in rows
             ) +
@@ -286,10 +291,12 @@ if entities:
         with st.expander(f"Show {len(extra)} more entities"):
             st.markdown(table_html(extra), unsafe_allow_html=True)
 
+    # CSV download (strips HTML)
     csv_buffer = StringIO()
     pd.DataFrame([
         {
             "Entity": r["Entity"],
+            "Type": r["Type"],
             "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"])
         }
         for r in rows

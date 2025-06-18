@@ -7,13 +7,15 @@ import html
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
 # --- Secure Password ---
-if "authenticated" not in st.session_state:
+if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
     password = st.text_input("Password", type="password")
     if password == st.secrets["app_password"]:
         st.session_state["authenticated"] = True
-        st.experimental_rerun()
+        st.success("Authenticated! Please reload the page.")
+        st.stop()
     else:
         st.stop()
+
 
 # --- Service Account Setup ---
 CREDENTIALS_PATH = "google_credentials.json"

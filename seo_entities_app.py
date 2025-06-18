@@ -6,11 +6,9 @@ import html
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
-# --- PULL SECRETS ---
 AUTH_PASSWORD = st.secrets.get("APP_PASSWORD")
 SERVICE_ACCOUNT = st.secrets.get("SEO_TEAM_461800")
 
-# --- PASSWORD PROTECTION ---
 if "authenticated" not in st.session_state:
     password = st.text_input("Password", type="password")
     if password != AUTH_PASSWORD:
@@ -18,7 +16,6 @@ if "authenticated" not in st.session_state:
     else:
         st.session_state["authenticated"] = True
 
-# --- Write service account secret to file for the NLP client ---
 CREDENTIALS_PATH = "google_credentials.json"
 if not os.path.exists(CREDENTIALS_PATH):
     with open(CREDENTIALS_PATH, "w") as f:
@@ -52,9 +49,9 @@ def get_entities_with_salience(text):
         entities.append({
             "name": e.name,
             "type": language_v1.Entity.Type(e.type_).name,
-            "salience": round(e.salience, 3),
-            "wikipedia_url": e.metadata.get("wikipedia_url", ""),
-            "mid": e.metadata.get("mid", "")
+            "salience": float(round(e.salience, 3)),
+            "wikipedia_url": str(e.metadata.get("wikipedia_url", "")),
+            "mid": str(e.metadata.get("mid", "")),
         })
     return entities
 
@@ -122,7 +119,9 @@ if entities:
     df = df.sort_values("salience", ascending=False)
     st.markdown("### Entities (sorted by importance to topic)")
     st.dataframe(df, use_container_width=True)
-    st.download_button("Download Entities as JSON", df.to_json(orient="records", indent=2), file_name="entities.json")
+    # Fix download by converting all data to str, drop None
+    download_entities = [{k: str(v) for k, v in entity.items()} for entity in entities]
+    st.download_button("Download Entities as JSON", json.dumps(download_entities, indent=2), file_name="entities.json")
     st.markdown("### Content with Entities Highlighted")
     styled_content = highlight_entities_spacy_style(content_text, entities)
     st.markdown(

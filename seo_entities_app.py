@@ -100,4 +100,95 @@ def highlight_entities_in_content(text, entities):
     entity_list = sorted(ent_map.items(), key=lambda x: -len(x[0]))
     text = html.escape(text)
     # Insert highlight spans for each entity
-    for name, info in entity
+    for name, info in entity_list:
+        if not name.strip():
+            continue
+        colour = ENTITY_TYPE_COLOURS.get(info["type"], "#e0e0e0")
+        label = info["type"]
+        sal = info["relevance"]
+        badge = (
+            f'<span style="background:{colour};color:#222;border-radius:4px;padding:2px 4px 2px 4px;margin:1px 1px 1px 0;'
+            f'font-size:1em;display:inline-block;white-space:nowrap;" title="{label} | Relevance: {sal}%">'
+            f'{html.escape(name)}'
+            f'<span style="background:#222;color:#fff;border-radius:2px;font-size:0.75em;padding:1px 7px;margin-left:7px;margin-right:1px;">{label}</span>'
+            f'</span>'
+        )
+        # Only highlight the first occurrence for each entity
+        text = re.sub(r'(?<![>\w])' + re.escape(name) + r'(?!</span>)', badge, text, count=1)
+    return text
+
+# --- UI ---
+
+st.markdown("# SEO Entity Extraction Tool")
+st.markdown("Analyse visible content or text and see entities highlighted in your content with type badge and salience percent. Categories at top, full table, CSV download.")
+
+mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])
+entities = []
+content_text = ""
+category_path = []
+category_conf = None
+
+if mode == "By URL":
+    url = st.text_input("Enter URL to fetch:")
+    if st.button("Analyse"):
+        with st.spinner("Fetching and analysing..."):
+            try:
+                import requests
+                response = requests.get(url)
+                html_code = response.text
+                content_text = extract_visible_text(html_code)
+                entities, (category_path, category_conf) = get_entities_and_category(content_text)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+elif mode == "Paste HTML":
+    html_input = st.text_area("Paste HTML here", height=150)
+    if st.button("Analyse"):
+        with st.spinner("Analysing pasted HTML..."):
+            try:
+                content_text = extract_visible_text(html_input)
+                entities, (category_path, category_conf) = get_entities_and_category(content_text)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+else:
+    text_input = st.text_area("Paste plain text here", height=150)
+    if st.button("Analyse"):
+        with st.spinner("Analysing pasted plain text..."):
+            try:
+                content_text = text_input
+                entities, (category_path, category_conf) = get_entities_and_category(content_text)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+# --- CATEGORY ---
+if category_path:
+    cat_str = " › ".join(category_path)
+    st.markdown(f"#### From your description, Google attributes this category to this entity")
+    st.markdown(f'<span style="color:#567;">{" › ".join(category_path)}</span> <span style="color:#aaa;font-size:0.9em;">({category_conf}% confidence)</span>', unsafe_allow_html=True)
+
+# --- ENTITIES TABLE & DOWNLOAD ---
+if entities:
+    import pandas as pd
+    df = pd.DataFrame(entities)
+    df = df.sort_values("salience", ascending=False)
+    st.markdown("### Entities (sorted by importance to topic)")
+    st.dataframe(df[["name", "type", "relevance", "wikipedia_url"]].rename(columns={"name":"Entity", "type":"Type", "relevance":"Relevance (%)", "wikipedia_url":"Wikipedia URL"}), use_container_width=True)
+    # --- Robust CSV Download ---
+    from io import StringIO
+    csv_buffer = StringIO()
+    df[["name", "type", "relevance", "wikipedia_url"]].to_csv(csv_buffer, index=False)
+    st.download_button("Download Entities as CSV", csv_buffer.getvalue(), file_name="entities.csv", mime="text/csv")
+    # --- Highlighted Content ---
+    st.markdown("### Content with Entities Highlighted")
+    styled_content = highlight_entities_in_content(content_text, entities)
+    if styled_content.strip():
+        st.markdown(
+            f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.85;">{styled_content}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("No content to highlight or no entities found.")
+
+st.markdown("---")
+st.caption("Entities are highlighted with badges by type. Relevance = Google salience as percent. Topic category is shown above. EngineRoom 2024.")

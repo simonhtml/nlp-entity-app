@@ -55,6 +55,25 @@ ENTITY_TYPE_COLOURS = {
     "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
 }
 
+SCHEMA_TYPE_LINKS = {
+    "PERSON": ["https://schema.org/Person"],
+    "ORG": ["https://schema.org/Organization", "https://schema.org/LocalBusiness", "https://schema.org/Corporation"],
+    "ORGANIZATION": ["https://schema.org/Organization", "https://schema.org/LocalBusiness", "https://schema.org/Corporation"],
+    "LOCATION": ["https://schema.org/Place", "https://schema.org/PostalAddress"],
+    "ADDRESS": ["https://schema.org/PostalAddress"],
+    "EVENT": ["https://schema.org/Event"],
+    "WORK_OF_ART": ["https://schema.org/CreativeWork"],
+    "CONSUMER_GOOD": ["https://schema.org/Product"],
+    "PRODUCT": ["https://schema.org/Product"],
+    "DATE": ["https://schema.org/Date"],
+    "PRICE": ["https://schema.org/Offer"],
+    "NUMBER": ["https://schema.org/QuantitativeValue"],
+    "PHONE_NUMBER": ["https://schema.org/ContactPoint"],
+    "CARDINAL": ["https://schema.org/QuantitativeValue"],
+    "ORDINAL": ["https://schema.org/QuantitativeValue"],
+    "OTHER": ["https://schema.org/Thing"]
+}
+
 def adjust_colour(hex_colour, light=True):
     hex_colour = hex_colour.lstrip("#")
     r, g, b = [int(hex_colour[i:i+2], 16) for i in (0, 2, 4)]
@@ -67,21 +86,6 @@ def adjust_colour(hex_colour, light=True):
         g = int(g * 0.85)
         b = int(b * 0.85)
     return f"#{r:02x}{g:02x}{b:02x}"
-
-def clean_entity_name(name):
-    # Unicode normalisation (NFKD), remove diacritics, weird apostrophes, dashes, quotes, etc.
-    name = unicodedata.normalize("NFKD", name)
-    # Replace curly quotes/apostrophes/dashes with normal ones
-    name = re.sub(r"[‘’´`]", "'", name)
-    name = re.sub(r'[“”]', '"', name)
-    name = re.sub(r"[\u2013\u2014]", "-", name)  # en/em dash to hyphen
-    # Remove anything not word, space, hyphen
-    name = re.sub(r"[^\w\s\-]", "", name)
-    # Collapse multiple spaces/hyphens, strip
-    name = re.sub(r"\s+", " ", name).strip()
-    # Remove control and non-ASCII
-    name = name.encode("ascii", "ignore").decode("ascii")
-    return name.title()
 
 def extract_visible_text(html_code):
     soup = BeautifulSoup(html_code, "html.parser")
@@ -101,7 +105,9 @@ def get_entities_and_category(text):
     entities_response = client.analyze_entities(document=doc, encoding_type='UTF8')
     entity_map = {}
     for e in entities_response.entities:
-        name = clean_entity_name(e.name)
+        name = re.sub(r"[^\w\s\-]", "", e.name).strip()
+        name = re.sub(r"\s+", " ", name)
+        name = name.title()
         if not name:
             continue
         etype = language_v1.Entity.Type(e.type_).name
@@ -130,8 +136,8 @@ def get_entities_and_category(text):
 
 def clean_entity_for_wiki(name):
     name = name.replace("’", "'")
-    name = re.sub(r'[\u2013\u2014]', '-', name)
-    name = re.sub(r'[^\w\s\-]', '', name)
+    name = re.sub(r'[\u2013\u2014]', '-', name)  # en/em dash
+    name = re.sub(r'[^\w\s\-]', '', name)  # Remove stray non-word
     name = re.sub(r'\s+', ' ', name).strip()
     name = name.title()
     return name.replace(" ", "_")
@@ -156,20 +162,22 @@ def highlight_entities_in_content(text, entities):
         if not ent:
             return word
         colour = ENTITY_TYPE_COLOURS.get(ent["type"], "#adb5bd")
-        # No text colour override, only background
+        dark = adjust_colour(colour, light=False)
         return (
-            f'<span style="background:{colour};padding:1px 6px 1px 6px;border-radius:5px;'
+            f'<span style="background:{colour};color:#222;padding:1px 6px 1px 6px;border-radius:5px;'
             f'display:inline-block;margin:1px 2px 1px 0;line-height:1.8;font-size:1em;vertical-align:middle;" '
             f'title="{ent["type"]} | Relevance: {ent["relevance"]}%">'
             f'{html.escape(word)}'
-            f' <span style="background:#333;color:#fff;border-radius:2px;font-size:0.72em;padding:1px 5px 1px 5px;margin-left:4px;">{ent["type"]}</span>'
+            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.72em;padding:1px 5px 1px 5px;margin-left:4px;">{ent["type"]}</span>'
             f'</span>'
         )
-    entity_names = [re.escape(e["name"]) for e in sorted_ents if e["name"]]
-    if not entity_names:
-        return html.escape(text)
+    entity_names = [re.escape(e["name"]) for e in sorted_ents]
     pattern = r'\b(' + "|".join(entity_names) + r')\b'
     return re.sub(pattern, highlight, text, flags=re.IGNORECASE)
+
+def build_schema_links(etype):
+    links = SCHEMA_TYPE_LINKS.get(etype.upper(), ["https://schema.org/Thing"])
+    return ", ".join([f'<a href="{url}" target="_blank" rel="noopener">{url.split("/")[-1]}</a>' for url in links])
 
 st.markdown("# SEO Entity Extraction Tool")
 st.markdown(
@@ -179,6 +187,7 @@ st.markdown(
     - A green progress bar above shows the confidence Google has in the overall topic classification.
     - "Google Wiki" means Google's Knowledge Graph mapped it directly.  
     - "No Google Wiki, guessed Wiki" tries to match the entity's Wikipedia page (if found).
+    - "Potential Schema Markup" suggests relevant schema.org types for each entity.
     """
 )
 
@@ -254,16 +263,27 @@ if entities:
         wiki_html = ""
         clean_wiki = clean_entity_for_wiki(entity_name)
         display_title = clean_wiki.replace("_", " ")
+        # Wikipedia check: prefer Google Knowledge Graph, else try guess (do not link if guess is 404)
         if wiki:
             wiki_html = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{display_title}</a>'
         else:
             guessed_url = f"https://en.wikipedia.org/wiki/{clean_wiki}"
-            wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{display_title}</a>'
+            try:
+                head = requests.head(guessed_url, timeout=2)
+                if head.status_code == 200:
+                    wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{display_title}</a>'
+                else:
+                    wiki_html = "No Google Wiki, no valid guessed Wiki"
+            except Exception:
+                wiki_html = "No Google Wiki, no valid guessed Wiki"
+
+        schema_links = build_schema_links(row["type"])
         rows.append({
             "Entity": html.escape(entity_name),
             "Type": row["type"],
             "Relevance": bar,
-            "Wikipedia": wiki_html
+            "Wikipedia": wiki_html,
+            "Potential Schema Markup": schema_links
         })
 
     TOP_N = 20
@@ -274,10 +294,11 @@ if entities:
         return (
             '<table style="width:100%; font-size:1em; border-collapse:collapse;">'
             '<tr>'
-            '<th align="left" style="width:190px;" title="The entity Google extracted from your content.">Entity</th>'
+            '<th align="left" style="width:170px;" title="The entity Google extracted from your content.">Entity</th>'
             '<th align="left" style="width:60px;" title="Entity type as classified by Google NLP.">Type</th>'
-            '<th align="left" style="width:150px;" title="Relevance is the Google salience score, shown as a percentage of total topical importance for this document.">Relevance</th>'
-            '<th align="left" style="width:320px;" title="Link to entity in Google Knowledge Graph or, if unavailable, a guessed Wikipedia page.">Wikipedia</th>'
+            '<th align="left" style="width:145px;" title="Relevance is the Google salience score, shown as a percentage of total topical importance for this document.">Relevance</th>'
+            '<th align="left" style="width:230px;" title="Link to entity in Google Knowledge Graph or, if unavailable, a guessed Wikipedia page.">Wikipedia</th>'
+            '<th align="left" style="width:240px;" title="Best practice schema.org types for this entity (click for docs)">Potential Schema Markup</th>'
             '</tr>' +
             "".join(
                 f'<tr>'
@@ -285,6 +306,7 @@ if entities:
                 f'<td style="padding:3px 6px;vertical-align:middle;">{r["Type"]}</td>'
                 f'<td style="padding:3px 8px;vertical-align:middle;">{r["Relevance"]}</td>'
                 f'<td style="padding:3px 8px;vertical-align:middle;">{r["Wikipedia"]}</td>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Potential Schema Markup"]}</td>'
                 f'</tr>'
                 for r in rows
             ) +
@@ -303,7 +325,8 @@ if entities:
         {
             "Entity": r["Entity"],
             "Type": r["Type"],
-            "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"])
+            "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"]),
+            "Potential Schema Markup": re.sub("<.*?>", "", r["Potential Schema Markup"])
         }
         for r in rows
     ]).to_csv(csv_buffer, index=False)

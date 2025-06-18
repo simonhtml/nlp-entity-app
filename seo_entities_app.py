@@ -122,18 +122,32 @@ def highlight_entities_in_content(text, entities):
     return text
 
 def fetch_wiki_title(wiki_url):
-    # Given a wiki url, get the title (or None if not found)
     page = wiki_url.split("/wiki/")[-1]
-    r = requests.get("https://en.wikipedia.org/w/api.php", params={
-        "action": "query", "prop": "info", "inprop": "url", "format": "json", "titles": page
-    })
-    data = r.json()
-    pages = data.get("query", {}).get("pages", {})
-    for pageid, info in pages.items():
-        if int(pageid) < 0:
+    try:
+        r = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "prop": "info",
+                "inprop": "url",
+                "format": "json",
+                "titles": page,
+            },
+            timeout=5,
+        )
+        # Return None if not a JSON response
+        try:
+            data = r.json()
+        except Exception:
             return None
-        return info.get("title")
-    return None
+        pages = data.get("query", {}).get("pages", {})
+        for pageid, info in pages.items():
+            if int(pageid) < 0:
+                return None
+            return info.get("title")
+    except Exception:
+        return None
+
 
 # --- UI ---
 

@@ -6,9 +6,11 @@ import html
 import requests
 import pandas as pd
 from io import StringIO
+import colorsys
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
+# --- Rerun compatibility for all Streamlit versions
 try:
     rerun = st.rerun
 except AttributeError:
@@ -37,6 +39,7 @@ if st.session_state["request_count"] >= LIMIT:
     st.error("Rate limit exceeded. Please wait or reload the app later.")
     st.stop()
 
+# ---- Service Account ----
 CREDENTIALS_PATH = "google_credentials.json"
 if not os.path.exists(CREDENTIALS_PATH):
     creds = st.secrets["SEO_TEAM_461800"]
@@ -56,6 +59,36 @@ ENTITY_TYPE_COLOURS = {
     "NUMBER": "#dee2e6", "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa",
     "ORGANISATION": "#a5d8ff", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
 }
+
+def hex_to_rgb(hex_colour):
+    hex_colour = hex_colour.lstrip("#")
+    return tuple(int(hex_colour[i:i+2], 16) for i in (0, 2, 4))
+
+def rgb_to_hex(rgb_tuple):
+    return "#{:02x}{:02x}{:02x}".format(*rgb_tuple)
+
+def adjust_lightness(hex_colour, amount=1.2):
+    r, g, b = hex_to_rgb(hex_colour)
+    h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
+    l = max(0, min(1, l * amount))
+    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
+    return rgb_to_hex((int(r2*255), int(g2*255), int(b2*255)))
+
+def adjust_darkness(hex_colour, amount=0.8):
+    r, g, b = hex_to_rgb(hex_colour)
+    h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
+    l = max(0, min(1, l * amount))
+    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
+    return rgb_to_hex((int(r2*255), int(g2*255), int(b2*255)))
+
+def make_progress_html(percent, colour):
+    light = adjust_lightness(colour, 1.7)
+    dark = adjust_darkness(colour, 0.7)
+    return f'''
+    <div style="background:{light};border-radius:7px;width:105px;height:18px;position:relative;overflow:hidden;">
+        <div style="background:{dark};width:{percent}%;height:100%;border-radius:7px 0 0 7px;"></div>
+        <span style="position:absolute;top:0;left:50%;transform:translateX(-50%,0);font-size:0.95em;color:#222;font-weight:600;line-height:18px;">{percent}%</span>
+    </div>'''
 
 def extract_visible_text(html_code):
     soup = BeautifulSoup(html_code, "html.parser")
@@ -120,34 +153,6 @@ def highlight_entities_in_content(text, entities):
         )
         text = re.sub(r'(?<![>\w])' + re.escape(name) + r'(?!</span>)', badge, text, count=1)
     return text
-
-def fetch_wiki_title(wiki_url):
-    page = wiki_url.split("/wiki/")[-1]
-    try:
-        r = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "prop": "info",
-                "inprop": "url",
-                "format": "json",
-                "titles": page,
-            },
-            timeout=5,
-        )
-        # Return None if not a JSON response
-        try:
-            data = r.json()
-        except Exception:
-            return None
-        pages = data.get("query", {}).get("pages", {})
-        for pageid, info in pages.items():
-            if int(pageid) < 0:
-                return None
-            return info.get("title")
-    except Exception:
-        return None
-
 
 # --- UI ---
 
@@ -226,30 +231,18 @@ if entities:
     df = df.sort_values("salience", ascending=False)
     df = df.reset_index(drop=True)
 
-    def make_progress_html(percent, colour):
-        return f'''
-        <div style="background:#f0f0f0;border-radius:3px;width:95px;height:10px;position:relative;">
-            <div style="background:{colour};width:{percent}%;height:100%;border-radius:3px;"></div>
-            <span style="position:absolute;top:-2px;left:50%;transform:translateX(-50%);font-size:0.75em;color:#222;">{percent}%</span>
-        </div>'''
-
     rows = []
     for idx, row in df.iterrows():
         colour = ENTITY_TYPE_COLOURS.get(row["type"], "#eee")
         relevance_bar = make_progress_html(row["relevance"], colour)
-        # Wiki logic
+        # Wiki logic (fast version, no API calls)
         wiki = row["wikipedia_url"]
         entity_name = row["name"]
         if wiki:
-            title = fetch_wiki_title(wiki) or entity_name
-            wiki_disp = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{title}</a>'
+            wiki_disp = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{entity_name}</a>'
         else:
             guessed_url = f"https://en.wikipedia.org/wiki/{entity_name.replace(' ', '_')}"
-            guessed_title = fetch_wiki_title(guessed_url)
-            if guessed_title:
-                wiki_disp = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{guessed_title}</a>'
-            else:
-                wiki_disp = "No Google Wiki, no valid guessed Wiki"
+            wiki_disp = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{entity_name}</a>'
         rows.append({
             "Entity": html.escape(entity_name),
             "Type": row["type"],
@@ -265,7 +258,7 @@ if entities:
     def table_html(rows):
         return (
             '<table style="width:100%; font-size:0.98em; border-collapse:collapse;">'
-            '<tr><th align="left">Entity</th><th align="left">Type</th><th align="left" style="width:110px;">Relevance</th><th align="left" style="width:290px;">Wikipedia</th></tr>' +
+            '<tr><th align="left">Entity</th><th align="left">Type</th><th align="left" style="width:115px;">Relevance</th><th align="left" style="width:320px;">Wikipedia</th></tr>' +
             "".join(
                 f'<tr>'
                 f'<td style="padding:3px 6px;">{r["Entity"]}</td>'
@@ -308,4 +301,4 @@ if entities:
         st.info("No content to highlight or no entities found.")
 
 st.markdown("---")
-st.caption("Entities are highlighted with badges by type. Relevance = Google salience as percent. Topic category is shown above. Rate limited to 15 analyses per session. Simon 2025.")
+st.caption("© Simon 2025")

@@ -3,10 +3,10 @@ import os
 import json
 import re
 import html
+import unicodedata
 import requests
 import pandas as pd
 from io import StringIO
-import colorsys
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
@@ -48,7 +48,6 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
 from bs4 import BeautifulSoup
 from google.cloud import language_v1
 
-# Clean and distinct entity type set
 ENTITY_TYPE_COLOURS = {
     "PERSON": "#51cf66", "LOCATION": "#ffe066", "ORGANIZATION": "#339af0", "ORG": "#339af0",
     "EVENT": "#eebefa", "WORK_OF_ART": "#ffd6a5", "CONSUMER_GOOD": "#f4bfbf", "PRODUCT": "#f4bfbf",
@@ -57,7 +56,6 @@ ENTITY_TYPE_COLOURS = {
 }
 
 def adjust_colour(hex_colour, light=True):
-    # darken or lighten hex colour (simple, works for UI)
     hex_colour = hex_colour.lstrip("#")
     r, g, b = [int(hex_colour[i:i+2], 16) for i in (0, 2, 4)]
     if light:
@@ -69,6 +67,21 @@ def adjust_colour(hex_colour, light=True):
         g = int(g * 0.85)
         b = int(b * 0.85)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+def clean_entity_name(name):
+    # Unicode normalisation (NFKD), remove diacritics, weird apostrophes, dashes, quotes, etc.
+    name = unicodedata.normalize("NFKD", name)
+    # Replace curly quotes/apostrophes/dashes with normal ones
+    name = re.sub(r"[‘’´`]", "'", name)
+    name = re.sub(r'[“”]', '"', name)
+    name = re.sub(r"[\u2013\u2014]", "-", name)  # en/em dash to hyphen
+    # Remove anything not word, space, hyphen
+    name = re.sub(r"[^\w\s\-]", "", name)
+    # Collapse multiple spaces/hyphens, strip
+    name = re.sub(r"\s+", " ", name).strip()
+    # Remove control and non-ASCII
+    name = name.encode("ascii", "ignore").decode("ascii")
+    return name.title()
 
 def extract_visible_text(html_code):
     soup = BeautifulSoup(html_code, "html.parser")
@@ -86,20 +99,15 @@ def get_entities_and_category(text):
     client = language_v1.LanguageServiceClient()
     doc = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
     entities_response = client.analyze_entities(document=doc, encoding_type='UTF8')
-    # Deduplicate: keep best (highest salience) per cleaned entity
     entity_map = {}
     for e in entities_response.entities:
-        # Clean up entity name: ASCII, strip/control, titlecase
-        name = re.sub(r"[^\w\s\-]", "", e.name).strip()
-        name = re.sub(r"\s+", " ", name)
-        name = name.title()
+        name = clean_entity_name(e.name)
         if not name:
             continue
+        etype = language_v1.Entity.Type(e.type_).name
+        if etype == "ORGANIZATION":
+            etype = "ORG"
         if name not in entity_map or e.salience > entity_map[name]["salience"]:
-            # Clean type (use ORG for ORGANIZATION, and always upper)
-            etype = language_v1.Entity.Type(e.type_).name
-            if etype == "ORGANIZATION":
-                etype = "ORG"
             entity_map[name] = {
                 "name": name,
                 "type": etype,
@@ -109,7 +117,6 @@ def get_entities_and_category(text):
                 "mid": str(e.metadata.get("mid", "")),
             }
     entities = list(entity_map.values())
-    # Category
     try:
         category_resp = client.classify_text(document=doc)
         if category_resp.categories:
@@ -123,14 +130,13 @@ def get_entities_and_category(text):
 
 def clean_entity_for_wiki(name):
     name = name.replace("’", "'")
-    name = re.sub(r'[\u2013\u2014]', '-', name)  # en/em dash
-    name = re.sub(r'[^\w\s\-]', '', name)  # Remove stray non-word
+    name = re.sub(r'[\u2013\u2014]', '-', name)
+    name = re.sub(r'[^\w\s\-]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
     name = name.title()
     return name.replace(" ", "_")
 
 def make_progress_bar(percent, colour):
-    # Full width cell, light background fill, dark progress bar, bold percent text centered
     light = adjust_colour(colour, light=True)
     dark = adjust_colour(colour, light=False)
     return f"""
@@ -143,27 +149,25 @@ def make_progress_bar(percent, colour):
 def highlight_entities_in_content(text, entities):
     if not text:
         return ""
-    # Order by length, longest first (avoid substring clashing)
     sorted_ents = sorted(entities, key=lambda e: -len(e["name"]))
-    # Build regex map for all entities
     def highlight(match):
         word = match.group(0)
         ent = next((e for e in sorted_ents if e["name"].lower() == word.lower()), None)
         if not ent:
             return word
         colour = ENTITY_TYPE_COLOURS.get(ent["type"], "#adb5bd")
-        dark = adjust_colour(colour, light=False)
-        # Slim, inline, rounded
+        # No text colour override, only background
         return (
-            f'<span style="background:{colour};color:#222;padding:1px 6px 1px 6px;border-radius:5px;'
+            f'<span style="background:{colour};padding:1px 6px 1px 6px;border-radius:5px;'
             f'display:inline-block;margin:1px 2px 1px 0;line-height:1.8;font-size:1em;vertical-align:middle;" '
             f'title="{ent["type"]} | Relevance: {ent["relevance"]}%">'
             f'{html.escape(word)}'
-            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.72em;padding:1px 5px 1px 5px;margin-left:4px;">{ent["type"]}</span>'
+            f' <span style="background:#333;color:#fff;border-radius:2px;font-size:0.72em;padding:1px 5px 1px 5px;margin-left:4px;">{ent["type"]}</span>'
             f'</span>'
         )
-    # Regex: match any entity word boundary (word not inside other word)
-    entity_names = [re.escape(e["name"]) for e in sorted_ents]
+    entity_names = [re.escape(e["name"]) for e in sorted_ents if e["name"]]
+    if not entity_names:
+        return html.escape(text)
     pattern = r'\b(' + "|".join(entity_names) + r')\b'
     return re.sub(pattern, highlight, text, flags=re.IGNORECASE)
 
@@ -269,10 +273,12 @@ if entities:
     def table_html(rows):
         return (
             '<table style="width:100%; font-size:1em; border-collapse:collapse;">'
-            '<tr><th align="left" style="width:190px;">Entity</th>'
-            '<th align="left" style="width:60px;">Type</th>'
-            '<th align="left" style="width:150px;">Relevance</th>'
-            '<th align="left" style="width:320px;">Wikipedia</th></tr>' +
+            '<tr>'
+            '<th align="left" style="width:190px;" title="The entity Google extracted from your content.">Entity</th>'
+            '<th align="left" style="width:60px;" title="Entity type as classified by Google NLP.">Type</th>'
+            '<th align="left" style="width:150px;" title="Relevance is the Google salience score, shown as a percentage of total topical importance for this document.">Relevance</th>'
+            '<th align="left" style="width:320px;" title="Link to entity in Google Knowledge Graph or, if unavailable, a guessed Wikipedia page.">Wikipedia</th>'
+            '</tr>' +
             "".join(
                 f'<tr>'
                 f'<td style="padding:3px 8px;vertical-align:middle;">{r["Entity"]}</td>'

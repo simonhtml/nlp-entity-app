@@ -1,6 +1,8 @@
 import os
 import streamlit as st
 
+st.set_page_config(page_title="SEO Entity Tool", layout="wide")  # MUST be first Streamlit command
+
 # --- PASSWORD PROTECTION ---
 if "authenticated" not in st.session_state:
     password = st.text_input("Password", type="password")
@@ -42,7 +44,6 @@ def get_entities(text):
     entities = [{"name": e.name, "type": language_v1.Entity.Type(e.type_).name} for e in response.entities]
     return entities
 
-st.set_page_config(page_title="SEO Entity Tool", layout="wide")
 st.title("SEO Entity Extraction Tool (URL or Paste Mode)")
 
 mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])

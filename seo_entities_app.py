@@ -6,8 +6,14 @@ import html
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
-# ---- Password + Login Button, Centred Column ----
-col1, col2, col3 = st.columns([2, 3, 8])
+# --- rerun compatible with all Streamlit versions
+try:
+    rerun = st.rerun
+except AttributeError:
+    rerun = st.experimental_rerun
+
+# ---- Password + Login Button, Wide Centre Column ----
+col1, col2, col3 = st.columns([1, 5, 1])  # Wide centre
 if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
     with col2:
         st.markdown("### Login")
@@ -16,11 +22,10 @@ if "authenticated" not in st.session_state or not st.session_state["authenticate
         if login:
             if pw == st.secrets["app_password"]:
                 st.session_state["authenticated"] = True
-                st.experimental_rerun()
+                rerun()
             else:
                 st.error("Incorrect password.")
         st.stop()
-
 
 # ---- Write service account JSON to file ----
 CREDENTIALS_PATH = "google_credentials.json"

@@ -1,10 +1,18 @@
 import os
 import streamlit as st
 
-# For Streamlit Cloud: write credentials from secret to a file (for Google NLP)
-if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
+# --- PASSWORD PROTECTION ---
+if "authenticated" not in st.session_state:
+    password = st.text_input("Password", type="password")
+    if password != "EngineRoom2024!":
+        st.stop()
+    else:
+        st.session_state["authenticated"] = True
+
+# --- LOAD GOOGLE NLP CREDENTIALS FROM STREAMLIT SECRET ---
+if "SEO_TEAM_461800" in st.secrets:
     with open("google_credentials.json", "w") as f:
-        f.write(str(st.secrets["GOOGLE_CREDENTIALS_JSON"]))
+        f.write(str(st.secrets["SEO_TEAM_461800"]))
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_credentials.json"
 
 import requests
@@ -35,7 +43,6 @@ def get_entities(text):
     return entities
 
 st.set_page_config(page_title="SEO Entity Tool", layout="wide")
-
 st.title("SEO Entity Extraction Tool (URL or Paste Mode)")
 
 mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])
@@ -43,31 +50,45 @@ mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"
 if mode == "By URL":
     url = st.text_input("Enter URL to fetch:")
     if st.button("Analyse URL"):
-        response = requests.get(url)
-        html = response.text
-        visible = extract_visible_text(html)
-        entities = get_entities(visible)
-        st.success("Entities extracted from page body content.")
-        st.write(entities)
-        st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
-        with st.expander("Show extracted visible text"):
-            st.text_area("Visible text", visible, height=200)
+        with st.spinner("Fetching and analysing..."):
+            try:
+                response = requests.get(url)
+                html = response.text
+                visible = extract_visible_text(html)
+                entities = get_entities(visible)
+                st.success("Entities extracted from page body content.")
+                st.write(entities)
+                st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
+                with st.expander("Show extracted visible text"):
+                    st.text_area("Visible text", visible, height=200)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
 elif mode == "Paste HTML":
     html = st.text_area("Paste HTML here")
     if st.button("Analyse HTML"):
-        visible = extract_visible_text(html)
-        entities = get_entities(visible)
-        st.success("Entities extracted from pasted HTML body content.")
-        st.write(entities)
-        st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
-        with st.expander("Show extracted visible text"):
-            st.text_area("Visible text", visible, height=200)
+        with st.spinner("Analysing pasted HTML..."):
+            try:
+                visible = extract_visible_text(html)
+                entities = get_entities(visible)
+                st.success("Entities extracted from pasted HTML body content.")
+                st.write(entities)
+                st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
+                with st.expander("Show extracted visible text"):
+                    st.text_area("Visible text", visible, height=200)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
 else:
     text = st.text_area("Paste plain text here")
     if st.button("Analyse Text"):
-        entities = get_entities(text)
-        st.success("Entities extracted from pasted plain text.")
-        st.write(entities)
-        st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
-        with st.expander("Show input text"):
-            st.text_area("Input text", text, height=200)
+        with st.spinner("Analysing pasted plain text..."):
+            try:
+                entities = get_entities(text)
+                st.success("Entities extracted from pasted plain text.")
+                st.write(entities)
+                st.download_button("Download Entities as JSON", json.dumps(entities, indent=2), file_name="entities.json")
+                with st.expander("Show input text"):
+                    st.text_area("Input text", text, height=200)
+            except Exception as e:
+                st.error(f"Error: {e}")

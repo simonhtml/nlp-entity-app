@@ -6,20 +6,24 @@ import html
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
-AUTH_PASSWORD = st.secrets.get("APP_PASSWORD")
-SERVICE_ACCOUNT = st.secrets.get("SEO_TEAM_461800")
-
+# --- Secure Password ---
 if "authenticated" not in st.session_state:
     password = st.text_input("Password", type="password")
-    if password != AUTH_PASSWORD:
-        st.stop()
-    else:
+    if password == st.secrets["app_password"]:
         st.session_state["authenticated"] = True
+        st.experimental_rerun()
+    else:
+        st.stop()
 
+# --- Service Account Setup ---
 CREDENTIALS_PATH = "google_credentials.json"
 if not os.path.exists(CREDENTIALS_PATH):
+    creds = st.secrets["SEO_TEAM_461800"]
+    # Fix double-escaping for private_key in TOML
+    if "\\n" in creds and "\n" not in creds:
+        creds = creds.replace("\\n", "\n")
     with open(CREDENTIALS_PATH, "w") as f:
-        f.write(SERVICE_ACCOUNT)
+        f.write(creds)
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
 
 from bs4 import BeautifulSoup
@@ -35,10 +39,7 @@ def extract_visible_text(html_code):
         tag.decompose()
     for tag in soup.find_all(attrs={'id': ['sidebar', 'nav', 'footer', 'menu', 'header']}):
         tag.decompose()
-    if soup.body:
-        return soup.body.get_text(separator=' ', strip=True)
-    else:
-        return soup.get_text(separator=' ', strip=True)
+    return soup.body.get_text(separator=' ', strip=True) if soup.body else soup.get_text(separator=' ', strip=True)
 
 def get_entities_with_salience(text):
     client = language_v1.LanguageServiceClient()
@@ -119,7 +120,7 @@ if entities:
     df = df.sort_values("salience", ascending=False)
     st.markdown("### Entities (sorted by importance to topic)")
     st.dataframe(df, use_container_width=True)
-    # Fix download by converting all data to str, drop None
+    # Robust download: always valid JSON, no missing fields
     download_entities = [{k: str(v) for k, v in entity.items()} for entity in entities]
     st.download_button("Download Entities as JSON", json.dumps(download_entities, indent=2), file_name="entities.json")
     st.markdown("### Content with Entities Highlighted")

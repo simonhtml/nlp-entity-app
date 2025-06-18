@@ -1,4 +1,5 @@
-requests
-beautifulsoup4
-google-cloud-language
 streamlit
+google-cloud-language
+beautifulsoup4
+requests
+pandas

@@ -54,7 +54,6 @@ ENTITY_TYPE_COLOURS = {
     "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
 }
 
-# Schema.org types mapped by Google type
 SCHEMA_TYPE_MAP = {
     "PERSON": ["Person"],
     "ORG": ["Organization", "LocalBusiness"],
@@ -98,7 +97,6 @@ def extract_visible_text(html_code):
     return soup.body.get_text(separator=' ', strip=True) if soup.body else soup.get_text(separator=' ', strip=True)
 
 def clean_entity_name(name):
-    # Unicode normalisation (NFKD), remove diacritics, weird apostrophes, dashes, quotes, etc.
     name = unicodedata.normalize("NFKD", name)
     name = re.sub(r"[‘’´`]", "'", name)
     name = re.sub(r'[“”]', '"', name)
@@ -110,7 +108,6 @@ def clean_entity_name(name):
 
 def get_schema_links(entity_type, entity_name):
     schemas = SCHEMA_TYPE_MAP.get(entity_type, [])
-    # Optionally, enhance further per entity_name if you want more mapping logic.
     links = [f'<a href="https://schema.org/{s}" target="_blank" rel="noopener">{s}</a>' for s in schemas]
     return ", ".join(links) if links else ""
 
@@ -118,7 +115,8 @@ def count_occurrences(text, name):
     pattern = r"\b" + re.escape(name) + r"\b"
     return len(re.findall(pattern, text, flags=re.IGNORECASE))
 
-def get_entities_and_category(text):
+def get_entities_and_category(text, progress=None):
+    if progress: progress.progress(0.55, "Google NLP: extracting entities…")
     client = language_v1.LanguageServiceClient()
     doc = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
     entities_response = client.analyze_entities(document=doc, encoding_type='UTF8')
@@ -140,6 +138,7 @@ def get_entities_and_category(text):
                 "mid": str(e.metadata.get("mid", "")),
             }
     entities = list(entity_map.values())
+    if progress: progress.progress(0.75, "Google NLP: extracting topical category…")
     try:
         category_resp = client.classify_text(document=doc)
         if category_resp.categories:
@@ -212,38 +211,53 @@ category_conf = None
 if mode == "By URL":
     url = st.text_input("Enter URL to fetch:")
     if st.button("Analyse"):
-        with st.spinner("Fetching and analysing..."):
-            try:
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
-                response = requests.get(url, headers=headers)
-                html_code = response.text
-                content_text = extract_visible_text(html_code)
-                entities, (category_path, category_conf) = get_entities_and_category(content_text)
-                st.session_state["request_count"] += 1
-            except Exception as e:
-                st.error(f"Error: {e}")
+        progress = st.progress(0, "Starting…")
+        try:
+            progress.progress(0.10, "Fetching URL…")
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
+            response = requests.get(url, headers=headers)
+            progress.progress(0.20, "Fetched. Extracting visible text…")
+            html_code = response.text
+            content_text = extract_visible_text(html_code)
+            progress.progress(0.40, "Text extracted. Analysing entities…")
+            entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
+            progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["request_count"] += 1
+            progress.progress(1.0, "Done!")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            progress.empty()
 
 elif mode == "Paste HTML":
     html_input = st.text_area("Paste HTML here", height=150)
     if st.button("Analyse"):
-        with st.spinner("Analysing pasted HTML..."):
-            try:
-                content_text = extract_visible_text(html_input)
-                entities, (category_path, category_conf) = get_entities_and_category(content_text)
-                st.session_state["request_count"] += 1
-            except Exception as e:
-                st.error(f"Error: {e}")
+        progress = st.progress(0, "Starting…")
+        try:
+            progress.progress(0.10, "Extracting visible text…")
+            content_text = extract_visible_text(html_input)
+            progress.progress(0.35, "Analysing entities…")
+            entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
+            progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["request_count"] += 1
+            progress.progress(1.0, "Done!")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            progress.empty()
 
 else:
     text_input = st.text_area("Paste plain text here", height=150)
     if st.button("Analyse"):
-        with st.spinner("Analysing pasted plain text..."):
-            try:
-                content_text = text_input
-                entities, (category_path, category_conf) = get_entities_and_category(content_text)
-                st.session_state["request_count"] += 1
-            except Exception as e:
-                st.error(f"Error: {e}")
+        progress = st.progress(0, "Starting…")
+        try:
+            progress.progress(0.25, "Analysing entities…")
+            content_text = text_input
+            entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
+            progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["request_count"] += 1
+            progress.progress(1.0, "Done!")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            progress.empty()
 
 if category_path and category_conf is not None:
     st.markdown(f"#### From your description, Google attributes this category to this entity")
@@ -272,7 +286,6 @@ if entities:
         wiki = row["wikipedia_url"]
         entity_name = row["name"]
         schema_links = get_schema_links(row["type"], entity_name)
-        # "Times on page"
         times_on_page = count_occurrences(content_text, entity_name)
         clean_wiki = clean_entity_for_wiki(entity_name)
         display_title = clean_wiki.replace("_", " ")

@@ -14,7 +14,39 @@ try:
 except AttributeError:
     rerun = st.experimental_rerun
 
-tabs = st.tabs(["Entity Extraction", "Compare Competitors"])
+# ---- Login FIRST ----
+col1, col2, col3 = st.columns([1, 5, 1])
+if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
+    with col2:
+        st.markdown("### Login")
+        pw = st.text_input("Password", type="password", key="pw_input")
+        login = st.button("Login")
+        if login:
+            if pw == st.secrets["app_password"]:
+                st.session_state["authenticated"] = True
+                rerun()
+            else:
+                st.error("Incorrect password.")
+        st.stop()
+
+LIMIT = 15
+if "request_count" not in st.session_state:
+    st.session_state["request_count"] = 0
+if st.session_state["request_count"] >= LIMIT:
+    st.error("Rate limit exceeded. Please wait or reload the app later.")
+    st.stop()
+
+CREDENTIALS_PATH = "google_credentials.json"
+if not os.path.exists(CREDENTIALS_PATH):
+    creds = st.secrets["SEO_TEAM_461800"]
+    if "\\n" in creds and "\n" not in creds:
+        creds = creds.replace("\\n", "\n")
+    with open(CREDENTIALS_PATH, "w") as f:
+        f.write(creds)
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
+
+from bs4 import BeautifulSoup
+from google.cloud import language_v1
 
 ENTITY_TYPE_COLOURS = {
     "PERSON": "#51cf66", "LOCATION": "#ffe066", "ORGANIZATION": "#339af0", "ORG": "#339af0",
@@ -23,7 +55,6 @@ ENTITY_TYPE_COLOURS = {
     "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
 }
 
-# --- SHARED UTILS ---
 def adjust_colour(hex_colour, light=True):
     hex_colour = hex_colour.lstrip("#")
     r, g, b = [int(hex_colour[i:i+2], 16) for i in (0, 2, 4)]
@@ -48,7 +79,6 @@ def clean_entity_name(name):
     return name.title()
 
 def extract_visible_text(html_code):
-    from bs4 import BeautifulSoup
     soup = BeautifulSoup(html_code, "html.parser")
     for tag in soup(["script", "style", "head", "title", "meta", "[document]", "noscript"]):
         tag.decompose()
@@ -61,7 +91,6 @@ def extract_visible_text(html_code):
     return soup.body.get_text(separator=' ', strip=True) if soup.body else soup.get_text(separator=' ', strip=True)
 
 def get_entities_and_category(text, progress=None):
-    from google.cloud import language_v1
     if progress: progress.progress(0.55, "Google NLP: extracting entities…")
     client = language_v1.LanguageServiceClient()
     doc = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
@@ -100,16 +129,15 @@ def make_progress_bar(percent, colour):
     light = adjust_colour(colour, light=True)
     dark = adjust_colour(colour, light=False)
     return f"""
-    <div style="width:100%;max-width:110px;background:{light};height:22px;border-radius:13px;position:relative;overflow:hidden;">
-      <div style="background:{dark};width:{percent}%;height:100%;border-radius:13px;transition:width 0.2s;"></div>
-      <span style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#222;text-shadow:0 1px 4px #fff7;">{percent}%</span>
+    <div style="width:100%;max-width:110px;background:{light};height:20px;border-radius:11px;position:relative;overflow:hidden;">
+      <div style="background:{dark};width:{percent}%;height:100%;border-radius:11px;transition:width 0.2s;"></div>
+      <span style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:500;color:#222;text-shadow:0 1px 4px #fff7;">{percent}%</span>
     </div>
     """
 
 def highlight_entities_in_content(text, entities):
     if not text:
         return ""
-    # Order by length, longest first
     sorted_ents = sorted(entities, key=lambda e: -len(e["name"]))
     def highlight(match):
         word = match.group(0)
@@ -118,313 +146,205 @@ def highlight_entities_in_content(text, entities):
             return word
         colour = ENTITY_TYPE_COLOURS.get(ent["type"], "#adb5bd")
         dark = adjust_colour(colour, light=False)
-        # Slight padding only
         return (
-            f'<span style="background:{colour};color:#222;padding:0px 4px 0px 4px;border-radius:4px;'
-            f'display:inline-block;margin:0px 1px 0px 0;line-height:1.6;font-size:1em;vertical-align:middle;" '
+            f'<span style="background:{colour};color:#222;padding:0px 4px;border-radius:3px;'
+            f'display:inline-block;margin:0px 1px 0px 0;line-height:1.3;font-size:1em;vertical-align:middle;" '
             f'title="{ent["type"]} | Relevance: {ent["relevance"]}%">'
             f'{html.escape(word)}'
-            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.72em;padding:0px 4px 0px 4px;margin-left:4px;">{ent["type"]}</span>'
+            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.68em;padding:0px 4px 0px 4px;margin-left:3px;">{ent["type"]}</span>'
             f'</span>'
         )
     entity_names = [re.escape(e["name"]) for e in sorted_ents]
     pattern = r'\b(' + "|".join(entity_names) + r')\b'
     return re.sub(pattern, highlight, text, flags=re.IGNORECASE)
 
-# --- PASSWORD + GOOGLE CREDENTIALS ---
-with tabs[0]:
-    col1, col2, col3 = st.columns([1, 5, 1])
-    if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
-        with col2:
-            st.markdown("### Login")
-            pw = st.text_input("Password", type="password", key="pw_input")
-            login = st.button("Login")
-            if login:
-                if pw == st.secrets["app_password"]:
-                    st.session_state["authenticated"] = True
-                    rerun()
-                else:
-                    st.error("Incorrect password.")
-            st.stop()
+def page_topic_salience(keyword, category_path, entities, content_text):
+    # Simple method: 1. Exact entity match. 2. Partial entity match. 3. Google topical category similarity. 4. Presence in content.
+    keyword = keyword.strip().lower()
+    for ent in entities:
+        if ent["name"].lower() == keyword:
+            return f"Direct entity match ({ent['relevance']}%)"
+    for ent in entities:
+        if keyword in ent["name"].lower() or ent["name"].lower() in keyword:
+            return f"Related entity: '{ent['name']}' ({ent['relevance']}%)"
+    cat_str = " ".join(category_path).lower() if category_path else ""
+    if keyword in cat_str:
+        return f"Matches Google category: {' › '.join(category_path)}"
+    if keyword in content_text.lower():
+        return f"Found in visible page text"
+    return "No strong entity/category match"
 
-    LIMIT = 15
-    if "request_count" not in st.session_state:
-        st.session_state["request_count"] = 0
-    if st.session_state["request_count"] >= LIMIT:
-        st.error("Rate limit exceeded. Please wait or reload the app later.")
-        st.stop()
+st.markdown("# SEO Entity Extraction Tool")
+st.markdown(
+    """
+    This tool analyses the visible content of a page or pasted text and extracts Google's identified entities, sorted by their importance to your topic ("relevance" from Google salience).  
+    - Entities are shown with a progress bar for relevance and a Wikipedia link (if available).
+    - A green progress bar above shows the confidence Google has in the overall topic classification.
+    - "Google Wiki" means Google's Knowledge Graph mapped it directly.  
+    - "No Google Wiki, guessed Wiki" tries to match the entity's Wikipedia page (if found).
+    """
+)
 
-    CREDENTIALS_PATH = "google_credentials.json"
-    if not os.path.exists(CREDENTIALS_PATH):
-        creds = st.secrets["SEO_TEAM_461800"]
-        if "\\n" in creds and "\n" not in creds:
-            creds = creds.replace("\\n", "\n")
-        with open(CREDENTIALS_PATH, "w") as f:
-            f.write(creds)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_PATH
+mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])
+entities = []
+content_text = ""
+category_path = []
+category_conf = None
 
-# --- MAIN TAB 1: YOUR EXISTING TOOL ---
-with tabs[0]:
-    st.markdown("# SEO Entity Extraction Tool")
+url_autorun = False
+if mode == "By URL":
+    url = st.text_input("Enter URL to fetch:")
+    if url and not url.startswith("http"):
+        url = "https://" + url.lstrip("/")
+        url_autorun = True
+    if st.button("Analyse") or url_autorun:
+        progress = st.progress(0, "Starting…")
+        try:
+            progress.progress(0.10, "Fetching URL…")
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers)
+            progress.progress(0.20, "Fetched. Extracting visible text…")
+            html_code = response.text
+            content_text = extract_visible_text(html_code)
+            progress.progress(0.40, "Text extracted. Analysing entities…")
+            entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
+            progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["request_count"] += 1
+            progress.progress(1.0, "Done!")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            progress.empty()
+
+elif mode == "Paste HTML":
+    html_input = st.text_area("Paste HTML here", height=150)
+    if st.button("Analyse"):
+        progress = st.progress(0, "Starting…")
+        try:
+            progress.progress(0.10, "Extracting visible text…")
+            content_text = extract_visible_text(html_input)
+            progress.progress(0.35, "Analysing entities…")
+            entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
+            progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["request_count"] += 1
+            progress.progress(1.0, "Done!")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            progress.empty()
+
+else:
+    text_input = st.text_area("Paste plain text here", height=150)
+    if st.button("Analyse"):
+        progress = st.progress(0, "Starting…")
+        try:
+            progress.progress(0.25, "Analysing entities…")
+            content_text = text_input
+            entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
+            progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["request_count"] += 1
+            progress.progress(1.0, "Done!")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            progress.empty()
+
+# ---- "Salience to Topic" quick audit ----
+if entities and (category_path or content_text):
+    st.markdown("### Check salience to topic/keyword")
+    topic_word = st.text_input("Enter topic/keyword to check (e.g. cash for cars, family law, etc)", key="topic_word")
+    if topic_word:
+        st.info(page_topic_salience(topic_word, category_path, entities, content_text))
+
+# --- CATEGORY (with green progress bar) ---
+if category_path and category_conf is not None:
+    st.markdown(f"#### From your description, Google attributes this category to this entity")
     st.markdown(
-        """
-        This tool analyses the visible content of a page or pasted text and extracts Google's identified entities, sorted by their importance to your topic ("relevance" from Google salience).  
-        - Entities are shown with a progress bar for relevance and a Wikipedia link (if available).
-        - A green progress bar above shows the confidence Google has in the overall topic classification.
-        - "Google Wiki" means Google's Knowledge Graph mapped it directly.  
-        - "No Google Wiki, guessed Wiki" tries to match the entity's Wikipedia page (if found).
-        """
+        f'''
+        <div style="display:flex;align-items:center;">
+            <span style="color:#567;font-size:1.08em;">{' › '.join(category_path)}</span>
+            <div style="background:#e3fbe3; border-radius:6px; margin-left:20px; height:18px; width:130px; display:inline-block; overflow:hidden;">
+                <div style="background:#38b000; width:{category_conf}%; height:100%;"></div>
+            </div>
+            <span style="color:#38b000; margin-left:10px;">{category_conf}%</span>
+        </div>
+        ''',
+        unsafe_allow_html=True
     )
 
-    mode = st.radio("Select Input Mode", ["By URL", "Paste HTML", "Paste Plain Text"])
-    entities = []
-    content_text = ""
-    category_path = []
-    category_conf = None
+if entities:
+    df = pd.DataFrame(entities)
+    df = df.sort_values("salience", ascending=False)
+    df = df.reset_index(drop=True)
 
-    if mode == "By URL":
-        url = st.text_input("Enter URL to fetch:")
-        if st.button("Analyse"):
-            progress = st.progress(0, "Starting…")
-            try:
-                progress.progress(0.10, "Fetching URL…")
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
-                response = requests.get(url, headers=headers)
-                progress.progress(0.20, "Fetched. Extracting visible text…")
-                html_code = response.text
-                content_text = extract_visible_text(html_code)
-                progress.progress(0.40, "Text extracted. Analysing entities…")
-                entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
-                progress.progress(0.85, "Processing table and highlights…")
-                st.session_state["request_count"] += 1
-                progress.progress(1.0, "Done!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-                progress.empty()
+    rows = []
+    for idx, row in df.iterrows():
+        colour = ENTITY_TYPE_COLOURS.get(row["type"], "#adb5bd")
+        bar = make_progress_bar(row["relevance"], colour)
+        wiki = row["wikipedia_url"]
+        entity_name = row["name"]
+        clean_wiki = entity_name.replace(" ", "_")
+        display_title = clean_wiki.replace("_", " ")
+        if wiki:
+            wiki_html = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{display_title}</a>'
+        else:
+            guessed_url = f"https://en.wikipedia.org/wiki/{clean_wiki}"
+            wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{display_title}</a>'
+        rows.append({
+            "Entity": html.escape(entity_name),
+            "Type": row["type"],
+            "Relevance": bar,
+            "Wikipedia": wiki_html
+        })
 
-    elif mode == "Paste HTML":
-        html_input = st.text_area("Paste HTML here", height=150)
-        if st.button("Analyse"):
-            progress = st.progress(0, "Starting…")
-            try:
-                progress.progress(0.10, "Extracting visible text…")
-                content_text = extract_visible_text(html_input)
-                progress.progress(0.35, "Analysing entities…")
-                entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
-                progress.progress(0.85, "Processing table and highlights…")
-                st.session_state["request_count"] += 1
-                progress.progress(1.0, "Done!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-                progress.empty()
+    TOP_N = 20
+    shown = rows[:TOP_N]
+    extra = rows[TOP_N:]
 
-    else:
-        text_input = st.text_area("Paste plain text here", height=150)
-        if st.button("Analyse"):
-            progress = st.progress(0, "Starting…")
-            try:
-                progress.progress(0.25, "Analysing entities…")
-                content_text = text_input
-                entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
-                progress.progress(0.85, "Processing table and highlights…")
-                st.session_state["request_count"] += 1
-                progress.progress(1.0, "Done!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-                progress.empty()
-
-    if category_path and category_conf is not None:
-        st.markdown(f"#### From your description, Google attributes this category to this entity")
-        st.markdown(
-            f'''
-            <div style="display:flex;align-items:center;">
-                <span style="color:#567;font-size:1.08em;">{' › '.join(category_path)}</span>
-                <div style="background:#e3fbe3; border-radius:6px; margin-left:20px; height:20px; width:150px; display:inline-block; overflow:hidden;">
-                    <div style="background:#38b000; width:{category_conf}%; height:100%;"></div>
-                </div>
-                <span style="color:#38b000; margin-left:10px;">{category_conf}%</span>
-            </div>
-            ''',
-            unsafe_allow_html=True
+    def table_html(rows):
+        return (
+            '<table style="width:100%; font-size:1em; border-collapse:collapse;">'
+            '<tr>'
+            '<th align="left" style="width:180px;">Entity</th>'
+            '<th align="left" style="width:60px;">Type</th>'
+            '<th align="left" style="width:130px;">Relevance</th>'
+            '<th align="left" style="width:320px;">Wikipedia</th>'
+            '</tr>' +
+            "".join(
+                f'<tr>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Entity"]}</td>'
+                f'<td style="padding:3px 6px;vertical-align:middle;">{r["Type"]}</td>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Relevance"]}</td>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Wikipedia"]}</td>'
+                f'</tr>'
+                for r in rows
+            ) +
+            '</table>'
         )
 
-    if entities:
-        df = pd.DataFrame(entities)
-        df = df.sort_values("salience", ascending=False)
-        df = df.reset_index(drop=True)
+    st.markdown("### Entities (sorted by importance to topic)")
+    st.markdown(table_html(shown), unsafe_allow_html=True)
+    if extra:
+        with st.expander(f"Show {len(extra)} more entities"):
+            st.markdown(table_html(extra), unsafe_allow_html=True)
 
-        rows = []
-        for idx, row in df.iterrows():
-            colour = ENTITY_TYPE_COLOURS.get(row["type"], "#adb5bd")
-            bar = make_progress_bar(row["relevance"], colour)
-            wiki = row["wikipedia_url"]
-            entity_name = row["name"]
-            clean_wiki = entity_name.replace(" ", "_")
-            display_title = clean_wiki.replace("_", " ")
-            if wiki:
-                wiki_html = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{display_title}</a>'
-            else:
-                guessed_url = f"https://en.wikipedia.org/wiki/{clean_wiki}"
-                wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{display_title}</a>'
-            rows.append({
-                "Entity": html.escape(entity_name),
-                "Type": row["type"],
-                "Relevance": bar,
-                "Wikipedia": wiki_html
-            })
+    csv_buffer = StringIO()
+    pd.DataFrame([
+        {
+            "Entity": r["Entity"],
+            "Type": r["Type"],
+            "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"])
+        }
+        for r in rows
+    ]).to_csv(csv_buffer, index=False)
+    st.download_button("Download Entities as CSV", csv_buffer.getvalue(), file_name="entities.csv", mime="text/csv")
 
-        TOP_N = 20
-        shown = rows[:TOP_N]
-        extra = rows[TOP_N:]
+    st.markdown("### Content with Entities Highlighted")
+    styled_content = highlight_entities_in_content(content_text, entities)
+    if styled_content.strip():
+        st.markdown(
+            f'<div style="background: #fafbff; padding:0.6em 1.1em; border-radius:8px; line-height:1.35;">{styled_content}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("No content to highlight or no entities found.")
 
-        def table_html(rows):
-            return (
-                '<table style="width:100%; font-size:1em; border-collapse:collapse;">'
-                '<tr>'
-                '<th align="left" style="width:180px;">Entity</th>'
-                '<th align="left" style="width:60px;">Type</th>'
-                '<th align="left" style="width:150px;">Relevance</th>'
-                '<th align="left" style="width:320px;">Wikipedia</th>'
-                '</tr>' +
-                "".join(
-                    f'<tr>'
-                    f'<td style="padding:3px 8px;vertical-align:middle;">{r["Entity"]}</td>'
-                    f'<td style="padding:3px 6px;vertical-align:middle;">{r["Type"]}</td>'
-                    f'<td style="padding:3px 8px;vertical-align:middle;">{r["Relevance"]}</td>'
-                    f'<td style="padding:3px 8px;vertical-align:middle;">{r["Wikipedia"]}</td>'
-                    f'</tr>'
-                    for r in rows
-                ) +
-                '</table>'
-            )
-
-        st.markdown("### Entities (sorted by importance to topic)")
-        st.markdown(table_html(shown), unsafe_allow_html=True)
-        if extra:
-            with st.expander(f"Show {len(extra)} more entities"):
-                st.markdown(table_html(extra), unsafe_allow_html=True)
-
-        csv_buffer = StringIO()
-        pd.DataFrame([
-            {
-                "Entity": r["Entity"],
-                "Type": r["Type"],
-                "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"])
-            }
-            for r in rows
-        ]).to_csv(csv_buffer, index=False)
-        st.download_button("Download Entities as CSV", csv_buffer.getvalue(), file_name="entities.csv", mime="text/csv")
-
-        st.markdown("### Content with Entities Highlighted")
-        styled_content = highlight_entities_in_content(content_text, entities)
-        if styled_content.strip():
-            st.markdown(
-                f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.7;">{styled_content}</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.info("No content to highlight or no entities found.")
-
-    st.markdown("---")
-    st.caption("© Simon 2025")
-
-# --- MAIN TAB 2: COMPARE COMPETITORS ---
-with tabs[1]:
-    st.header("Compare Competitors")
-    st.markdown("""
-    Enter your page URL and up to 3 competitor URLs to compare entities and topical focus.
-    Each column shows the salience score for that entity on that page.
-    """)
-
-    col_main, col_comp1, col_comp2, col_comp3 = st.columns([3,3,3,3])
-    with col_main:
-        my_url = st.text_input("Your Page URL", key="c1")
-    with col_comp1:
-        comp1_url = st.text_input("Competitor 1 URL", key="c2")
-    with col_comp2:
-        comp2_url = st.text_input("Competitor 2 URL", key="c3")
-    with col_comp3:
-        comp3_url = st.text_input("Competitor 3 URL", key="c4")
-
-    run = st.button("Compare Now")
-
-    if run and my_url:
-        progress = st.progress(0, "Starting…")
-        urls = [("You", my_url), ("Competitor 1", comp1_url), ("Competitor 2", comp2_url), ("Competitor 3", comp3_url)]
-        results = {}
-        categories = {}
-        for idx, (label, url) in enumerate(urls):
-            if not url:
-                continue
-            try:
-                progress.progress((idx+1)/5, f"Fetching and analysing: {label}")
-                headers = {"User-Agent": "Mozilla/5.0"}
-                html_code = requests.get(url, headers=headers, timeout=12).text
-                text = extract_visible_text(html_code)
-                entities, (category_path, category_conf) = get_entities_and_category(text)
-                results[label] = {e['name']: e for e in entities}
-                categories[label] = (" › ".join(category_path), category_conf)
-            except Exception as e:
-                st.warning(f"Failed to process {label}: {url} — {e}")
-        progress.progress(1.0, "Done!")
-
-        # Show topic bar for each page
-        st.markdown("#### Topic (aboutness) for each page")
-        cats = []
-        for label, url in urls:
-            if not url:
-                continue
-            cat, conf = categories.get(label, ("", None))
-            if cat and conf is not None:
-                cats.append(f"<b>{label}:</b> <span style='color:#567;'>{cat}</span> <span style='color:#38b000;font-weight:700;'>({conf}%)</span>")
-        if cats:
-            st.markdown("<br>".join(cats), unsafe_allow_html=True)
-
-        # Collate unique entity set
-        all_entity_names = set()
-        for ent_dict in results.values():
-            all_entity_names.update(ent_dict.keys())
-        table = []
-        for name in sorted(all_entity_names):
-            row = {"Entity": name}
-            for label, _ in urls:
-                ent = results.get(label, {}).get(name)
-                if ent:
-                    colour = ENTITY_TYPE_COLOURS.get(ent['type'], "#adb5bd")
-                    bar = make_progress_bar(ent['relevance'], colour)
-                    row[label] = bar
-                else:
-                    row[label] = "–"
-            table.append(row)
-        if table:
-            # Table HTML for style
-            def comp_table_html(rows, col_labels):
-                cols = "".join([
-                    f'<th style="min-width:120px;text-align:left;">{html.escape(c)}</th>'
-                    for c in ["Entity"] + col_labels
-                ])
-                html_rows = ""
-                for r in rows:
-                    html_rows += "<tr>" + "".join([
-                        f'<td style="padding:3px 8px;vertical-align:middle;">{r[c] if c!="Entity" else html.escape(r[c])}</td>'
-                        for c in ["Entity"] + col_labels
-                    ]) + "</tr>"
-                return f"<table style='width:100%;font-size:1em;border-collapse:collapse;'>{cols}{html_rows}</table>"
-
-            col_labels = [label for label, _ in urls if _]
-            st.markdown("### Combined Entity Table (relevance to page topic)")
-            st.markdown(comp_table_html(table, col_labels), unsafe_allow_html=True)
-
-            # CSV download
-            csv_buffer = StringIO()
-            pd.DataFrame([
-                {c: (re.sub("<.*?>", "", r[c]) if c != "Entity" else r[c]) for c in ["Entity"] + col_labels}
-                for r in table
-            ]).to_csv(csv_buffer, index=False)
-            st.download_button("Download Comparison Table as CSV", csv_buffer.getvalue(), file_name="entity_comparison.csv", mime="text/csv")
-
-        else:
-            st.info("No entities found for comparison.")
-
-    st.markdown("---")
-    st.caption("© Simon 2025")
+st.markdown("---")
+st.caption("© Simon 2025")

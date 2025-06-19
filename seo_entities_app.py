@@ -298,30 +298,6 @@ if category_path and category_conf is not None:
         unsafe_allow_html=True
     )
 
-# ---- TOPIC/KEYWORD CHECK (tighter 3-col) ----
-if entities and (category_path or content_text):
-    st.markdown('<div class="topic-check-bar" style="margin-bottom:12px;">Check salience to topic/keyword</div>', unsafe_allow_html=True)
-    wordcol1, wordcol2, wordcol3 = st.columns([2, 1, 8])
-    with wordcol1:
-        topic_word = st.text_input("", key="topic_word", max_chars=40, placeholder="e.g. cash for cars", label_visibility="collapsed")
-    with wordcol2:
-        topic_btn = st.button("Check", key="topic_check_btn")
-    salience_result = st.session_state.get("salience_result", "")
-    if topic_btn and topic_word:
-        topic = topic_word.strip().lower()
-        all_text = content_text.lower() if content_text else ""
-        ent_found = any(topic in e["name"].lower() for e in entities)
-        count = all_text.count(topic)
-        if ent_found:
-            salience_result = f"This topic matches an entity Google extracted from this page."
-        elif count > 0:
-            salience_result = f"The phrase '{topic_word}' appears {count} times on this page, but isn't a Google entity."
-        else:
-            salience_result = f"The phrase '{topic_word}' is not a recognised entity and doesn't appear in visible text."
-        st.session_state["salience_result"] = salience_result
-    if salience_result:
-        wordcol3.info(salience_result)
-
 # --- ENTITIES TABLE & DOWNLOAD ---
 if entities:
     df = pd.DataFrame(entities)
@@ -404,7 +380,7 @@ if entities:
     styled_content = highlight_entities_in_content(content_text, entities)
     if styled_content.strip():
         st.markdown(
-            f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.55;">{styled_content}</div>',
+            f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.45;">{styled_content}</div>',
             unsafe_allow_html=True,
         )
     else:

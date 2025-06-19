@@ -9,26 +9,35 @@ from io import StringIO
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
+# --- CSS for polish ---
+st.markdown("""
+    <style>
+    div[data-testid="stForm"] { margin-bottom: 20px !important; }
+    div[data-testid="stForm"] input { max-width: 220px; min-width: 110px; }
+    .topic-check-bar { margin-top: 24px; margin-bottom: 10px; font-size:1.13em; font-weight:600; text-align:left;}
+    .google-topic-bar { margin-bottom: 14px; margin-top: 8px;}
+    </style>
+    """, unsafe_allow_html=True)
+
 try:
     rerun = st.rerun
 except AttributeError:
     rerun = st.experimental_rerun
 
-# ---- Login FIRST ----
-col1, col2, col3 = st.columns([2, 1, 2])
+col1, col2, col3 = st.columns([1, 5, 1])
 if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
     with col2:
         st.markdown("### Login")
-        pw_col1, pw_col2, pw_col3 = st.columns([3, 4, 2])
+        pw_col1, pw_col2, pw_col3 = st.columns([4,1,1])
+        with pw_col1:
+            pw = st.text_input("Password", type="password", key="pw_input")
         with pw_col2:
-            pw = st.text_input("Password", type="password", key="pw_input", max_chars=32)
-        login = st.button("Login")
-        if login or (pw and st.session_state.get("last_pw") != pw):
-            st.session_state["last_pw"] = pw
+            login = st.button("Login")
+        if login or (pw and st.session_state.get("pw_input_submitted")):
             if pw == st.secrets["app_password"]:
                 st.session_state["authenticated"] = True
                 rerun()
-            elif pw:
+            else:
                 st.error("Incorrect password.")
         st.stop()
 
@@ -58,6 +67,23 @@ ENTITY_TYPE_COLOURS = {
     "PRICE": "#ffe0e0", "PHONE_NUMBER": "#e0f7fa", "CARDINAL": "#eeeec7", "ORDINAL": "#eeeec7"
 }
 
+SCHEMA_TYPE_MAP = {
+    "PERSON": ["Person"],
+    "ORG": ["Organization", "LocalBusiness"],
+    "LOCATION": ["Place", "AdministrativeArea", "PostalAddress"],
+    "EVENT": ["Event"],
+    "WORK_OF_ART": ["CreativeWork"],
+    "PRODUCT": ["Product"],
+    "CONSUMER_GOOD": ["Product"],
+    "DATE": ["Date"],
+    "NUMBER": [],
+    "PRICE": ["PriceSpecification"],
+    "ADDRESS": ["PostalAddress"],
+    "OTHER": [],
+    "CARDINAL": [],
+    "ORDINAL": []
+}
+
 def adjust_colour(hex_colour, light=True):
     hex_colour = hex_colour.lstrip("#")
     r, g, b = [int(hex_colour[i:i+2], 16) for i in (0, 2, 4)]
@@ -71,16 +97,6 @@ def adjust_colour(hex_colour, light=True):
         b = int(b * 0.85)
     return f"#{r:02x}{g:02x}{b:02x}"
 
-def clean_entity_name(name):
-    name = unicodedata.normalize("NFKD", name)
-    name = re.sub(r"[‘’´`]", "'", name)
-    name = re.sub(r'[“”]', '"', name)
-    name = re.sub(r"[\u2013\u2014]", "-", name)
-    name = re.sub(r"[^\w\s\-]", "", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    name = name.encode("ascii", "ignore").decode("ascii")
-    return name.title()
-
 def extract_visible_text(html_code):
     soup = BeautifulSoup(html_code, "html.parser")
     for tag in soup(["script", "style", "head", "title", "meta", "[document]", "noscript"]):
@@ -92,6 +108,25 @@ def extract_visible_text(html_code):
     for tag in soup.find_all(attrs={'id': ['sidebar', 'nav', 'footer', 'menu', 'header']}):
         tag.decompose()
     return soup.body.get_text(separator=' ', strip=True) if soup.body else soup.get_text(separator=' ', strip=True)
+
+def clean_entity_name(name):
+    name = unicodedata.normalize("NFKD", name)
+    name = re.sub(r"[‘’´`]", "'", name)
+    name = re.sub(r'[“”]', '"', name)
+    name = re.sub(r"[\u2013\u2014]", "-", name)
+    name = re.sub(r"[^\w\s\-]", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    name = name.encode("ascii", "ignore").decode("ascii")
+    return name.title()
+
+def get_schema_links(entity_type, entity_name):
+    schemas = SCHEMA_TYPE_MAP.get(entity_type, [])
+    links = [f'<a href="https://schema.org/{s}" target="_blank" rel="noopener">{s}</a>' for s in schemas]
+    return ", ".join(links) if links else ""
+
+def count_occurrences(text, name):
+    pattern = r"\b" + re.escape(name) + r"\b"
+    return len(re.findall(pattern, text, flags=re.IGNORECASE))
 
 def get_entities_and_category(text, progress=None):
     if progress: progress.progress(0.55, "Google NLP: extracting entities…")
@@ -128,13 +163,21 @@ def get_entities_and_category(text, progress=None):
         pass
     return entities, ([], None)
 
+def clean_entity_for_wiki(name):
+    name = name.replace("’", "'")
+    name = re.sub(r'[\u2013\u2014]', '-', name)
+    name = re.sub(r'[^\w\s\-]', '', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+    name = name.title()
+    return name.replace(" ", "_")
+
 def make_progress_bar(percent, colour):
     light = adjust_colour(colour, light=True)
     dark = adjust_colour(colour, light=False)
     return f"""
-    <div style="width:100%;max-width:110px;background:{light};height:20px;border-radius:11px;position:relative;overflow:hidden;">
-      <div style="background:{dark};width:{percent}%;height:100%;border-radius:11px;transition:width 0.2s;"></div>
-      <span style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:500;color:#222;text-shadow:0 1px 4px #fff7;">{percent}%</span>
+    <div style="width:100%;max-width:120px;background:{light};height:22px;border-radius:13px;position:relative;overflow:hidden;">
+      <div style="background:{dark};width:{percent}%;height:100%;border-radius:13px;transition:width 0.2s;"></div>
+      <span style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:400;color:#fff;text-shadow:0 1px 4px #0003;">{percent}%</span>
     </div>
     """
 
@@ -150,32 +193,18 @@ def highlight_entities_in_content(text, entities):
         colour = ENTITY_TYPE_COLOURS.get(ent["type"], "#adb5bd")
         dark = adjust_colour(colour, light=False)
         return (
-            f'<span style="background:{colour};color:#222;padding:0px 4px;border-radius:3px;'
-            f'display:inline-block;margin:0px 1px 0px 0;line-height:1.3;font-size:1em;vertical-align:middle;" '
+            f'<span style="background:{colour};color:#222;padding:1px 4px 1px 4px;border-radius:4px;'
+            f'display:inline-block;margin:0 1.5px 0 0;line-height:1.6;font-size:1em;vertical-align:middle;" '
             f'title="{ent["type"]} | Relevance: {ent["relevance"]}%">'
             f'{html.escape(word)}'
-            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.68em;padding:0px 4px 0px 4px;margin-left:3px;">{ent["type"]}</span>'
+            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.72em;padding:0 4px 0 4px;margin-left:3px;">{ent["type"]}</span>'
             f'</span>'
         )
     entity_names = [re.escape(e["name"]) for e in sorted_ents]
     pattern = r'\b(' + "|".join(entity_names) + r')\b'
     return re.sub(pattern, highlight, text, flags=re.IGNORECASE)
 
-def page_topic_salience(keyword, category_path, entities, content_text):
-    keyword = keyword.strip().lower()
-    for ent in entities:
-        if ent["name"].lower() == keyword:
-            return f"Direct entity match ({ent['relevance']}%)"
-    for ent in entities:
-        if keyword in ent["name"].lower() or ent["name"].lower() in keyword:
-            return f"Related entity: '{ent['name']}' ({ent['relevance']}%)"
-    cat_str = " ".join(category_path).lower() if category_path else ""
-    if keyword in cat_str:
-        return f"Matches Google category: {' › '.join(category_path)}"
-    if keyword in content_text.lower():
-        return f"Found in visible page text"
-    return "No strong entity/category match"
-
+# --- UI ---
 st.markdown("# SEO Entity Extraction Tool")
 st.markdown(
     """
@@ -193,17 +222,16 @@ content_text = ""
 category_path = []
 category_conf = None
 
-url_autorun = False
 if mode == "By URL":
-    url = st.text_input("Enter URL to fetch:")
-    if url and not url.startswith("http"):
+    url = st.text_input("Enter URL to fetch:", value="", key="url_input")
+    if url and not url.lower().startswith("http"):
         url = "https://" + url.lstrip("/")
-        url_autorun = True
-    if st.button("Analyse") or url_autorun:
+    analyse_btn = st.button("Analyse")
+    if analyse_btn and url:
         progress = st.progress(0, "Starting…")
         try:
             progress.progress(0.10, "Fetching URL…")
-            headers = {"User-Agent": "Mozilla/5.0"}
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
             response = requests.get(url, headers=headers)
             progress.progress(0.20, "Fetched. Extracting visible text…")
             html_code = response.text
@@ -219,7 +247,8 @@ if mode == "By URL":
 
 elif mode == "Paste HTML":
     html_input = st.text_area("Paste HTML here", height=150)
-    if st.button("Analyse"):
+    analyse_btn = st.button("Analyse")
+    if analyse_btn and html_input:
         progress = st.progress(0, "Starting…")
         try:
             progress.progress(0.10, "Extracting visible text…")
@@ -235,7 +264,8 @@ elif mode == "Paste HTML":
 
 else:
     text_input = st.text_area("Paste plain text here", height=150)
-    if st.button("Analyse"):
+    analyse_btn = st.button("Analyse")
+    if analyse_btn and text_input:
         progress = st.progress(0, "Starting…")
         try:
             progress.progress(0.25, "Analysing entities…")
@@ -248,37 +278,14 @@ else:
             st.error(f"Error: {e}")
             progress.empty()
 
-# --- Topic Salience Field in 3-Column Row ---
-if entities and (category_path or content_text):
-    st.markdown("### Check salience to topic/keyword")
-    tc1, tc2, tc3 = st.columns([2, 3, 1])
-    with tc2:
-        topic_word = st.text_input(
-            "Keyword/topic",
-            key="topic_word",
-            max_chars=40,
-            placeholder="e.g. cash for cars",
-            label_visibility="collapsed",
-            help="Check if your main target phrase is a direct or related entity or matches the Google category."
-        )
-    submit = tc2.button("Check", key="check_topic")
-    salience_result = ""
-    if (submit or st.session_state.get("auto_check")) and topic_word:
-        salience_result = page_topic_salience(topic_word, category_path, entities, content_text)
-        st.session_state["auto_check"] = False
-    if topic_word and not submit:
-        st.session_state["auto_check"] = True
-    if salience_result:
-        tc2.info(salience_result)
-
-# --- CATEGORY (with green progress bar) ---
+# --- CATEGORY (with green progress bar, left, styled) ---
 if category_path and category_conf is not None:
-    st.markdown(f"#### From your description, Google attributes this category to this entity")
+    st.markdown(f'<div class="google-topic-bar" style="margin-bottom:18px;"><b>From your description, Google attributes this category to this entity</b></div>', unsafe_allow_html=True)
     st.markdown(
         f'''
-        <div style="display:flex;align-items:center;">
+        <div style="display:flex;align-items:center;margin-bottom:24px;">
             <span style="color:#567;font-size:1.08em;">{' › '.join(category_path)}</span>
-            <div style="background:#e3fbe3; border-radius:6px; margin-left:20px; height:18px; width:130px; display:inline-block; overflow:hidden;">
+            <div style="background:#e3fbe3; border-radius:6px; margin-left:20px; height:20px; width:150px; display:inline-block; overflow:hidden;">
                 <div style="background:#38b000; width:{category_conf}%; height:100%;"></div>
             </div>
             <span style="color:#38b000; margin-left:10px;">{category_conf}%</span>
@@ -287,6 +294,36 @@ if category_path and category_conf is not None:
         unsafe_allow_html=True
     )
 
+# --- Topic salience check (left, compact, no output loss) ---
+if entities and (category_path or content_text):
+    st.markdown('<div class="topic-check-bar">Check salience to topic/keyword</div>', unsafe_allow_html=True)
+    topic_form = st.form(key="topic_form", clear_on_submit=False)
+    form_col1, form_col2 = topic_form.columns([5, 1])
+    topic_word = form_col1.text_input(
+        "",
+        key="topic_word",
+        max_chars=40,
+        placeholder="e.g. cash for cars",
+        label_visibility="collapsed"
+    )
+    check_btn = form_col2.form_submit_button("Check")
+    salience_result = ""
+    if check_btn and topic_word:
+        topic = topic_word.strip().lower()
+        all_text = content_text.lower()
+        ent_found = any(topic in e["name"].lower() for e in entities)
+        count = all_text.count(topic)
+        # Crude similarity: contains, entity, or topic in top-3 salience entities
+        if ent_found:
+            salience_result = f"This topic matches an entity Google extracted from this page."
+        elif count > 0:
+            salience_result = f"The phrase '{topic_word}' appears {count} times on this page, but isn't a Google entity."
+        else:
+            salience_result = f"The phrase '{topic_word}' is not a recognised entity and doesn't appear in visible text."
+    if salience_result:
+        form_col1.info(salience_result)
+
+# --- ENTITY TABLE ---
 if entities:
     df = pd.DataFrame(entities)
     df = df.sort_values("salience", ascending=False)
@@ -298,7 +335,9 @@ if entities:
         bar = make_progress_bar(row["relevance"], colour)
         wiki = row["wikipedia_url"]
         entity_name = row["name"]
-        clean_wiki = entity_name.replace(" ", "_")
+        schema_links = get_schema_links(row["type"], entity_name)
+        times_on_page = count_occurrences(content_text, entity_name)
+        clean_wiki = clean_entity_for_wiki(entity_name)
         display_title = clean_wiki.replace("_", " ")
         if wiki:
             wiki_html = f'Google Wiki: <a href="{wiki}" target="_blank" rel="noopener">{display_title}</a>'
@@ -307,9 +346,11 @@ if entities:
             wiki_html = f'No Google Wiki, guessed Wiki: <a href="{guessed_url}" target="_blank" rel="noopener">{display_title}</a>'
         rows.append({
             "Entity": html.escape(entity_name),
+            "Times": times_on_page,
             "Type": row["type"],
             "Relevance": bar,
-            "Wikipedia": wiki_html
+            "Wikipedia": wiki_html,
+            "Potential Schema Markup": schema_links
         })
 
     TOP_N = 20
@@ -321,16 +362,20 @@ if entities:
             '<table style="width:100%; font-size:1em; border-collapse:collapse;">'
             '<tr>'
             '<th align="left" style="width:180px;">Entity</th>'
+            '<th align="left" style="width:40px;">Times</th>'
             '<th align="left" style="width:60px;">Type</th>'
-            '<th align="left" style="width:130px;">Relevance</th>'
+            '<th align="left" style="width:150px;">Relevance</th>'
             '<th align="left" style="width:320px;">Wikipedia</th>'
+            '<th align="left" style="width:210px;">Potential Schema Markup</th>'
             '</tr>' +
             "".join(
                 f'<tr>'
                 f'<td style="padding:3px 8px;vertical-align:middle;">{r["Entity"]}</td>'
+                f'<td style="padding:3px 6px;vertical-align:middle;">{r["Times"]}</td>'
                 f'<td style="padding:3px 6px;vertical-align:middle;">{r["Type"]}</td>'
                 f'<td style="padding:3px 8px;vertical-align:middle;">{r["Relevance"]}</td>'
                 f'<td style="padding:3px 8px;vertical-align:middle;">{r["Wikipedia"]}</td>'
+                f'<td style="padding:3px 8px;vertical-align:middle;">{r["Potential Schema Markup"]}</td>'
                 f'</tr>'
                 for r in rows
             ) +
@@ -347,8 +392,10 @@ if entities:
     pd.DataFrame([
         {
             "Entity": r["Entity"],
+            "Times on Page": r["Times"],
             "Type": r["Type"],
-            "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"])
+            "Wikipedia": re.sub("<.*?>", "", r["Wikipedia"]),
+            "Potential Schema Markup": re.sub("<.*?>", "", r["Potential Schema Markup"])
         }
         for r in rows
     ]).to_csv(csv_buffer, index=False)
@@ -358,7 +405,7 @@ if entities:
     styled_content = highlight_entities_in_content(content_text, entities)
     if styled_content.strip():
         st.markdown(
-            f'<div style="background: #fafbff; padding:0.6em 1.1em; border-radius:8px; line-height:1.35;">{styled_content}</div>',
+            f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.5;">{styled_content}</div>',
             unsafe_allow_html=True,
         )
     else:

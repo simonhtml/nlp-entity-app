@@ -15,17 +15,20 @@ except AttributeError:
     rerun = st.experimental_rerun
 
 # ---- Login FIRST ----
-col1, col2, col3 = st.columns([1, 5, 1])
+col1, col2, col3 = st.columns([2, 1, 2])
 if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
     with col2:
         st.markdown("### Login")
-        pw = st.text_input("Password", type="password", key="pw_input")
+        pw_col1, pw_col2, pw_col3 = st.columns([3, 4, 2])
+        with pw_col2:
+            pw = st.text_input("Password", type="password", key="pw_input", max_chars=32)
         login = st.button("Login")
-        if login:
+        if login or (pw and st.session_state.get("last_pw") != pw):
+            st.session_state["last_pw"] = pw
             if pw == st.secrets["app_password"]:
                 st.session_state["authenticated"] = True
                 rerun()
-            else:
+            elif pw:
                 st.error("Incorrect password.")
         st.stop()
 
@@ -159,7 +162,6 @@ def highlight_entities_in_content(text, entities):
     return re.sub(pattern, highlight, text, flags=re.IGNORECASE)
 
 def page_topic_salience(keyword, category_path, entities, content_text):
-    # Simple method: 1. Exact entity match. 2. Partial entity match. 3. Google topical category similarity. 4. Presence in content.
     keyword = keyword.strip().lower()
     for ent in entities:
         if ent["name"].lower() == keyword:
@@ -246,12 +248,28 @@ else:
             st.error(f"Error: {e}")
             progress.empty()
 
-# ---- "Salience to Topic" quick audit ----
+# --- Topic Salience Field in 3-Column Row ---
 if entities and (category_path or content_text):
     st.markdown("### Check salience to topic/keyword")
-    topic_word = st.text_input("Enter topic/keyword to check (e.g. cash for cars, family law, etc)", key="topic_word")
-    if topic_word:
-        st.info(page_topic_salience(topic_word, category_path, entities, content_text))
+    tc1, tc2, tc3 = st.columns([2, 3, 1])
+    with tc2:
+        topic_word = st.text_input(
+            "Keyword/topic",
+            key="topic_word",
+            max_chars=40,
+            placeholder="e.g. cash for cars",
+            label_visibility="collapsed",
+            help="Check if your main target phrase is a direct or related entity or matches the Google category."
+        )
+    submit = tc2.button("Check", key="check_topic")
+    salience_result = ""
+    if (submit or st.session_state.get("auto_check")) and topic_word:
+        salience_result = page_topic_salience(topic_word, category_path, entities, content_text)
+        st.session_state["auto_check"] = False
+    if topic_word and not submit:
+        st.session_state["auto_check"] = True
+    if salience_result:
+        tc2.info(salience_result)
 
 # --- CATEGORY (with green progress bar) ---
 if category_path and category_conf is not None:

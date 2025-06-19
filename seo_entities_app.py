@@ -9,31 +9,19 @@ from io import StringIO
 
 st.set_page_config(page_title="SEO Entity Extraction", layout="wide")
 
-# --- CSS for polish ---
-st.markdown("""
-    <style>
-    div[data-testid="stForm"] { margin-bottom: 20px !important; }
-    div[data-testid="stForm"] input { max-width: 220px; min-width: 110px; }
-    .topic-check-bar { margin-top: 24px; margin-bottom: 10px; font-size:1.13em; font-weight:600; text-align:left;}
-    .google-topic-bar { margin-bottom: 14px; margin-top: 8px;}
-    </style>
-    """, unsafe_allow_html=True)
-
 try:
     rerun = st.rerun
 except AttributeError:
     rerun = st.experimental_rerun
 
+# ---- PASSWORD ----
 col1, col2, col3 = st.columns([1, 5, 1])
 if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
     with col2:
         st.markdown("### Login")
-        pw_col1, pw_col2, pw_col3 = st.columns([4,1,1])
-        with pw_col1:
-            pw = st.text_input("Password", type="password", key="pw_input")
-        with pw_col2:
-            login = st.button("Login")
-        if login or (pw and st.session_state.get("pw_input_submitted")):
+        pw = st.text_input("Password", type="password", key="pw_input")
+        login = st.button("Login")
+        if login:
             if pw == st.secrets["app_password"]:
                 st.session_state["authenticated"] = True
                 rerun()
@@ -41,6 +29,7 @@ if "authenticated" not in st.session_state or not st.session_state["authenticate
                 st.error("Incorrect password.")
         st.stop()
 
+# ---- RATE LIMIT ----
 LIMIT = 15
 if "request_count" not in st.session_state:
     st.session_state["request_count"] = 0
@@ -48,6 +37,7 @@ if st.session_state["request_count"] >= LIMIT:
     st.error("Rate limit exceeded. Please wait or reload the app later.")
     st.stop()
 
+# ---- GOOGLE CREDENTIALS ----
 CREDENTIALS_PATH = "google_credentials.json"
 if not os.path.exists(CREDENTIALS_PATH):
     creds = st.secrets["SEO_TEAM_461800"]
@@ -175,9 +165,9 @@ def make_progress_bar(percent, colour):
     light = adjust_colour(colour, light=True)
     dark = adjust_colour(colour, light=False)
     return f"""
-    <div style="width:100%;max-width:120px;background:{light};height:22px;border-radius:13px;position:relative;overflow:hidden;">
-      <div style="background:{dark};width:{percent}%;height:100%;border-radius:13px;transition:width 0.2s;"></div>
-      <span style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:400;color:#fff;text-shadow:0 1px 4px #0003;">{percent}%</span>
+    <div style="width:100%;max-width:120px;background:{light};height:22px;border-radius:14px;position:relative;overflow:hidden;">
+      <div style="background:{dark};width:{percent}%;height:100%;border-radius:14px;transition:width 0.2s;"></div>
+      <span style="position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:600;color:#fff;text-shadow:0 1px 4px #0003;font-size:0.98em;">{percent}%</span>
     </div>
     """
 
@@ -193,18 +183,17 @@ def highlight_entities_in_content(text, entities):
         colour = ENTITY_TYPE_COLOURS.get(ent["type"], "#adb5bd")
         dark = adjust_colour(colour, light=False)
         return (
-            f'<span style="background:{colour};color:#222;padding:1px 4px 1px 4px;border-radius:4px;'
-            f'display:inline-block;margin:0 1.5px 0 0;line-height:1.6;font-size:1em;vertical-align:middle;" '
+            f'<span style="background:{colour};color:#222;padding:0px 4px 0px 4px;border-radius:4px;'
+            f'display:inline-block;margin:0px 1.5px 0px 0;line-height:1.4;font-size:1em;vertical-align:middle;" '
             f'title="{ent["type"]} | Relevance: {ent["relevance"]}%">'
             f'{html.escape(word)}'
-            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.72em;padding:0 4px 0 4px;margin-left:3px;">{ent["type"]}</span>'
+            f' <span style="background:{dark};color:#fff;border-radius:2px;font-size:0.67em;padding:0px 4px 0px 4px;margin-left:3px;">{ent["type"]}</span>'
             f'</span>'
         )
     entity_names = [re.escape(e["name"]) for e in sorted_ents]
     pattern = r'\b(' + "|".join(entity_names) + r')\b'
     return re.sub(pattern, highlight, text, flags=re.IGNORECASE)
 
-# --- UI ---
 st.markdown("# SEO Entity Extraction Tool")
 st.markdown(
     """
@@ -222,12 +211,12 @@ content_text = ""
 category_path = []
 category_conf = None
 
+# ---- MAIN ANALYSIS ----
 if mode == "By URL":
-    url = st.text_input("Enter URL to fetch:", value="", key="url_input")
-    if url and not url.lower().startswith("http"):
+    url = st.text_input("Enter URL to fetch (auto-adds https:// if missing):")
+    if url and not url.startswith("http"):
         url = "https://" + url.lstrip("/")
-    analyse_btn = st.button("Analyse")
-    if analyse_btn and url:
+    if st.button("Analyse"):
         progress = st.progress(0, "Starting…")
         try:
             progress.progress(0.10, "Fetching URL…")
@@ -239,6 +228,10 @@ if mode == "By URL":
             progress.progress(0.40, "Text extracted. Analysing entities…")
             entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
             progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["entities"] = entities
+            st.session_state["content_text"] = content_text
+            st.session_state["category_path"] = category_path
+            st.session_state["category_conf"] = category_conf
             st.session_state["request_count"] += 1
             progress.progress(1.0, "Done!")
         except Exception as e:
@@ -247,8 +240,7 @@ if mode == "By URL":
 
 elif mode == "Paste HTML":
     html_input = st.text_area("Paste HTML here", height=150)
-    analyse_btn = st.button("Analyse")
-    if analyse_btn and html_input:
+    if st.button("Analyse"):
         progress = st.progress(0, "Starting…")
         try:
             progress.progress(0.10, "Extracting visible text…")
@@ -256,6 +248,10 @@ elif mode == "Paste HTML":
             progress.progress(0.35, "Analysing entities…")
             entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
             progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["entities"] = entities
+            st.session_state["content_text"] = content_text
+            st.session_state["category_path"] = category_path
+            st.session_state["category_conf"] = category_conf
             st.session_state["request_count"] += 1
             progress.progress(1.0, "Done!")
         except Exception as e:
@@ -264,28 +260,36 @@ elif mode == "Paste HTML":
 
 else:
     text_input = st.text_area("Paste plain text here", height=150)
-    analyse_btn = st.button("Analyse")
-    if analyse_btn and text_input:
+    if st.button("Analyse"):
         progress = st.progress(0, "Starting…")
         try:
             progress.progress(0.25, "Analysing entities…")
             content_text = text_input
             entities, (category_path, category_conf) = get_entities_and_category(content_text, progress=progress)
             progress.progress(0.85, "Processing table and highlights…")
+            st.session_state["entities"] = entities
+            st.session_state["content_text"] = content_text
+            st.session_state["category_path"] = category_path
+            st.session_state["category_conf"] = category_conf
             st.session_state["request_count"] += 1
             progress.progress(1.0, "Done!")
         except Exception as e:
             st.error(f"Error: {e}")
             progress.empty()
 
-# --- CATEGORY (with green progress bar, left, styled) ---
+# ---- Always use session state to persist after analysis
+entities = st.session_state.get("entities", [])
+content_text = st.session_state.get("content_text", "")
+category_path = st.session_state.get("category_path", [])
+category_conf = st.session_state.get("category_conf", None)
+
+# --- CATEGORY (with green progress bar, left aligned) ---
 if category_path and category_conf is not None:
-    st.markdown(f'<div class="google-topic-bar" style="margin-bottom:18px;"><b>From your description, Google attributes this category to this entity</b></div>', unsafe_allow_html=True)
     st.markdown(
         f'''
-        <div style="display:flex;align-items:center;margin-bottom:24px;">
-            <span style="color:#567;font-size:1.08em;">{' › '.join(category_path)}</span>
-            <div style="background:#e3fbe3; border-radius:6px; margin-left:20px; height:20px; width:150px; display:inline-block; overflow:hidden;">
+        <div style="display:flex;align-items:center;margin-bottom:16px;margin-top:14px;">
+            <span style="color:#567;font-size:1.08em;padding-right:24px;">{' › '.join(category_path)}</span>
+            <div style="background:#e3fbe3; border-radius:6px; height:20px; width:150px; display:inline-block; overflow:hidden;">
                 <div style="background:#38b000; width:{category_conf}%; height:100%;"></div>
             </div>
             <span style="color:#38b000; margin-left:10px;">{category_conf}%</span>
@@ -294,36 +298,31 @@ if category_path and category_conf is not None:
         unsafe_allow_html=True
     )
 
-# --- Topic salience check (left, compact, no output loss) ---
+# ---- TOPIC/KEYWORD CHECK (tighter 3-col) ----
 if entities and (category_path or content_text):
-    st.markdown('<div class="topic-check-bar">Check salience to topic/keyword</div>', unsafe_allow_html=True)
-    topic_form = st.form(key="topic_form", clear_on_submit=False)
-    form_col1, form_col2 = topic_form.columns([5, 1])
-    topic_word = form_col1.text_input(
-        "",
-        key="topic_word",
-        max_chars=40,
-        placeholder="e.g. cash for cars",
-        label_visibility="collapsed"
-    )
-    check_btn = form_col2.form_submit_button("Check")
-    salience_result = ""
-    if check_btn and topic_word:
+    st.markdown('<div class="topic-check-bar" style="margin-bottom:12px;">Check salience to topic/keyword</div>', unsafe_allow_html=True)
+    wordcol1, wordcol2, wordcol3 = st.columns([2, 1, 8])
+    with wordcol1:
+        topic_word = st.text_input("", key="topic_word", max_chars=40, placeholder="e.g. cash for cars", label_visibility="collapsed")
+    with wordcol2:
+        topic_btn = st.button("Check", key="topic_check_btn")
+    salience_result = st.session_state.get("salience_result", "")
+    if topic_btn and topic_word:
         topic = topic_word.strip().lower()
-        all_text = content_text.lower()
+        all_text = content_text.lower() if content_text else ""
         ent_found = any(topic in e["name"].lower() for e in entities)
         count = all_text.count(topic)
-        # Crude similarity: contains, entity, or topic in top-3 salience entities
         if ent_found:
             salience_result = f"This topic matches an entity Google extracted from this page."
         elif count > 0:
             salience_result = f"The phrase '{topic_word}' appears {count} times on this page, but isn't a Google entity."
         else:
             salience_result = f"The phrase '{topic_word}' is not a recognised entity and doesn't appear in visible text."
+        st.session_state["salience_result"] = salience_result
     if salience_result:
-        form_col1.info(salience_result)
+        wordcol3.info(salience_result)
 
-# --- ENTITY TABLE ---
+# --- ENTITIES TABLE & DOWNLOAD ---
 if entities:
     df = pd.DataFrame(entities)
     df = df.sort_values("salience", ascending=False)
@@ -405,7 +404,7 @@ if entities:
     styled_content = highlight_entities_in_content(content_text, entities)
     if styled_content.strip():
         st.markdown(
-            f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.5;">{styled_content}</div>',
+            f'<div style="background: #fafbff; padding:1em 1.2em; border-radius:8px; line-height:1.55;">{styled_content}</div>',
             unsafe_allow_html=True,
         )
     else:
